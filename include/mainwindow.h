@@ -7,7 +7,6 @@
 #include <QList>
 #include <QByteArray>
 #include <QStringList>
-#include "devicehandler.h"
 #include "whisper_manager.h"
 #include "msgsender.h"
 #include "speechsynthesizer.h"
