@@ -30,6 +30,7 @@ ui_*.h
 Makefile*
 *build-*
 build/
+builds/
 *.qm
 *.prl
 *.qmlls.ini
@@ -54,3 +55,6 @@ compile_commands.json
 *creator.user*
 
 *_qmlcache.qrc
+
+# VSCode
+.vscode/
