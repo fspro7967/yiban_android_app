@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 一伴 · 老人提醒端（Qt 6 / QML）
+// 颐伴 · 老人提醒端（Qt 6 / QML）
 // 结构：安全区 → StackView 页面栈 → 全屏提醒/呼救覆盖层 → 撤销条/Toast。
 ApplicationWindow {
     id: window
@@ -12,7 +12,7 @@ ApplicationWindow {
     width: 412
     height: 915
     visible: true
-    title: "一伴 · 提醒"
+    title: "颐伴 · 提醒"
     color: window.theme.bg
 
     Theme { id: appTheme }

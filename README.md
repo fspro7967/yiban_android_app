@@ -1,4 +1,4 @@
-# 一伴 · 老人提醒端（QML / Android）
+# 颐伴 · 老人提醒端（QML / Android）
 
 面向独居老人的提醒前端，按 [`agent/需求分析.md`](agent/需求分析.md) 与
 [`agent/需求扩展与技术路线.md`](agent/需求扩展与技术路线.md) 的适老化约束实现。

@@ -127,7 +127,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
             ${QML_FILES}
     )
 
-    set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_APP_NAME "一伴")
+    set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_APP_NAME "颐伴")
 
 # Define target properties for Android with Qt 6 as:
     set_property(TARGET yiban_android_app APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR

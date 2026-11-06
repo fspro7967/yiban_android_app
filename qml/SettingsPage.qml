@@ -349,7 +349,7 @@ Item {
                     role: "label"
                     color: page.theme.inkSoft
                     horizontalAlignment: Text.AlignHCenter
-                    text: "一伴 · 老人提醒演示版 0.1\n数据只保存在本机"
+                    text: "颐伴 · 老人提醒演示版 0.1\n数据只保存在本机"
                     wrapMode: Text.WordWrap
                 }
             }
