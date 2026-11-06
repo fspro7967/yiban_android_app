@@ -1,11 +1,18 @@
 <?xml version="1.0"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="org.qtproject.example"
+    package="com.yiban.elder"
     android:installLocation="auto"
     android:versionCode="-- %%INSERT_VERSION_CODE%% --"
     android:versionName="-- %%INSERT_VERSION_NAME%% --">
-    <!-- 允许访问网络，用于调用 AI 大模型 API -->
+    <!-- 允许访问网络：后续接入提醒后端同步 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 11+ 需要声明 TTS 服务的可见性，否则 TextToSpeech 找不到引擎 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <!-- %%INSERT_PERMISSIONS -->
     <!-- %%INSERT_FEATURES -->
     <supports-screens
@@ -27,7 +34,8 @@
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
             android:label="-- %%INSERT_APP_NAME%% --"
             android:launchMode="singleTop"
-            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize"
+            android:screenOrientation="portrait"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

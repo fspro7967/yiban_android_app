@@ -1,24 +1,19 @@
-#include "mainwindow.h"
-
 #include <QGuiApplication>
-#include <QQmlApplicationEngine>
 #include <QLocale>
+#include <QQmlApplicationEngine>
 #include <QTranslator>
-#include <QQmlContext>
-
 
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
 
-    // 设置组织/应用名，使 QSettings（AI 配置持久化）能正常工作
-    QCoreApplication::setOrganizationName("SmartGlasses");
-    QCoreApplication::setApplicationName("SmartGlassesAssistant");
+    QCoreApplication::setOrganizationName("Yiban");
+    QCoreApplication::setApplicationName("YibanElder");
 
     QTranslator translator;
     const QStringList uiLanguages = QLocale::system().uiLanguages();
     for (const QString &locale : uiLanguages) {
-        const QString baseName = "smartglasses_android_app_" + QLocale(locale).name();
+        const QString baseName = "yiban_android_app_" + QLocale(locale).name();
         if (translator.load(":/i18n/" + baseName)) {
             app.installTranslator(&translator);
             break;
@@ -26,11 +21,6 @@ int main(int argc, char *argv[])
     }
 
     QQmlApplicationEngine engine;
-
-    // 将业务逻辑桥接类暴露给 QML（在 qml/Main.qml 中以 backend 引用）
-    MainWindow mainWindow;
-    engine.rootContext()->setContextProperty("backend", &mainWindow);
-
     engine.loadFromModule("SmartGlasses", "Main");
     if (engine.rootObjects().isEmpty())
         return -1;

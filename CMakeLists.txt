@@ -84,8 +84,8 @@ unset(_qt_toolchain_normalized)
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Quick Qml)
 
-# Multimedia 用于 QAudioSink：把 TTS 合成出的 PCM 推到手机扬声器。
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml Bluetooth Concurrent Network Multimedia)
+# TextToSpeech 用于提醒/统计的语音播报。
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech)
 
 # QTP0001 NEW：QML 模块资源前缀使用 /qt/qml（默认 QML 导入路径）。
 # OLD 行为（资源放在 :/SmartGlasses/）在 Qt 6.11 上找不到 qmldir，
@@ -98,38 +98,36 @@ set(TS_FILES yiban_android_app_zh_CN.ts)
 
 set(PROJECT_SOURCES
         ${TS_FILES}
+        src/main.cpp
 )
 
-include_directories(./includes/)
-
-# 添加 whisper.cpp 子目录
-add_subdirectory(third_party/whisper.cpp)
-# 禁用 OpenMP，避免依赖 libomp.so
-set(GGML_OPENMP OFF CACHE BOOL "Disable OpenMP for Android" FORCE)
-set(GGML_OPENMP OFF)
-
-file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-file(GLOB_RECURSE HEADER_FILES ${CMAKE_CURRENT_SOURCE_DIR}/includes/*.h)
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(yiban_android_app
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
-        ${SRC_FILES}
-        ${HEADER_FILES}
     )
 
-    # 文件位于 qml/ 子目录，映射到模块根，使 loadFromModule("SmartGlasses", "Main") 可加载
-    # 注意：QT_RESOURCE_ALIAS 必须在 qt6_add_qml_module 之前设置，
-    # 否则宏在调用时读不到该属性，类型会被注册为 SmartGlasses.qml.Main 而非 SmartGlasses.Main
-    set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS "Main.qml")
+    # qml/ 下所有页面与组件都注册进模块；文件平铺在 qml/ 根，别名回到模块根，
+    # 这样既能用 loadFromModule("SmartGlasses", "Main") 启动，也能被同一模块内的
+    # 其他 QML 直接按文件名引用（无需 import 子目录）。
+    # 注意：QT_RESOURCE_ALIAS 必须在 qt_add_qml_module 之前设置，
+    # 否则类型会被注册为 SmartGlasses.qml.Main 而非 SmartGlasses.Main。
+    file(GLOB QML_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/qml/*.qml")
+    foreach(_qml_file ${QML_FILES})
+        get_filename_component(_qml_name "${_qml_file}" NAME)
+        set_source_files_properties("${_qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${_qml_name}")
+    endforeach()
+    unset(_qml_file)
+    unset(_qml_name)
 
-    # 注册 QML 模块（qml/Main.qml 作为入口界面）
     qt_add_qml_module(yiban_android_app
         URI SmartGlasses
         VERSION 1.0
         QML_FILES
-            qml/Main.qml
+            ${QML_FILES}
     )
+
+    set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_APP_NAME "一伴")
 
 # Define target properties for Android with Qt 6 as:
     set_property(TARGET yiban_android_app APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -160,29 +158,9 @@ endif()
 target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::Quick
     Qt${QT_VERSION_MAJOR}::Qml
-    Qt${QT_VERSION_MAJOR}::Bluetooth
-    Qt${QT_VERSION_MAJOR}::Concurrent
-    Qt${QT_VERSION_MAJOR}::Network
-    Qt${QT_VERSION_MAJOR}::Multimedia    # QAudioSink：TTS 播放
-    whisper                              # 链接 whisper 库
+    Qt${QT_VERSION_MAJOR}::QuickControls2
+    Qt${QT_VERSION_MAJOR}::TextToSpeech
 )
-
-target_include_directories(yiban_android_app PRIVATE
-    ${CMAKE_SOURCE_DIR}/third_party/whisper.cpp/include   # 头文件路径
-)
-
-# Qt for Android 不依赖系统 TLS，必须将 OpenSSL 库随 APK 一起打包，
-# 否则 QNetworkAccessManager 请求 https 时会报 TLS 初始化错误。
-if (ANDROID)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/android_openssl/android_openssl.cmake)
-    add_android_openssl_libraries(yiban_android_app)
-
-    # 离线中文 TTS：sherpa-onnx 的纯 C API 库 + 其 ONNX Runtime 依赖。
-    # 这两个 .so 不入版本库，构建前需先跑 third_party/sherpa-onnx/download-libs.sh，
-    # 缺失时 sherpa-onnx.cmake 会给出明确的 FATAL_ERROR。
-    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx/sherpa-onnx.cmake)
-    add_sherpa_onnx_libraries(yiban_android_app)
-endif()
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an
@@ -210,7 +188,7 @@ if(QT_VERSION_MAJOR EQUAL 6)
 endif()
 
 # 可选：APK 构建完成后自动安装到已连接的 Android 设备
-option(AUTO_INSTALL_APK "Automatically install the built APK on a connected device after the apk target completes" ON)
+option(AUTO_INSTALL_APK "Automatically install the built APK on a connected device after the apk target completes" OFF)
 
 # Qt 6.11 的 CMake 部署目标会生成 unsigned APK；QT_ANDROID_SIGN_APK
 # 不是该版本的有效 target property，因此在 APK 目标完成后显式调用 apksigner。
