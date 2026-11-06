@@ -29,6 +29,8 @@ public:
     // ---- 读取（VM 用，不直接暴露给 QML）----
     QVariantList occurrencesToday() const;      // 已按 dueTs 排序、含派生字段
     QVariantMap currentOccurrence() const;      // 首页"下一条"，空 map 表示全部完成
+    QVariantMap nextUpcomingOccurrence() const; // 今天结束后，下一条未来提醒（跨天）
+    QVariantList upcomingOccurrences() const;   // 下一个有提醒的日期的完整清单
     QVariantList plans() const;
     QVariantList records() const;
     QVariantList stats(int days) const;
@@ -95,6 +97,7 @@ private:
 
     void seedDemo();
     void rebuildToday();
+    QVariantList occurrencesForDay(const QDate &day) const;
     void fireDue(qint64 occurrenceId);
     void appendEvent(qint64 occurrenceId, const QString &action, const QString &reason);
 

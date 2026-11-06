@@ -22,6 +22,9 @@ class DeviceVM : public QObject
     Q_PROPERTY(bool kioskActive READ kioskActive NOTIFY kioskChanged)
     Q_PROPERTY(bool voiceEnabled READ voiceEnabled WRITE setVoiceEnabled NOTIFY voiceChanged)
     Q_PROPERTY(bool nightQuiet READ nightQuiet WRITE setNightQuiet NOTIFY voiceChanged)
+    Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY networkChanged)
+    Q_PROPERTY(QString wifiName READ wifiName NOTIFY networkChanged)
+    Q_PROPERTY(bool networkOnline READ networkOnline NOTIFY networkChanged)
 
 public:
     explicit DeviceVM(QObject *parent = nullptr);
@@ -36,6 +39,13 @@ public:
     void setVoiceEnabled(bool on);
     bool nightQuiet() const { return m_nightQuiet; }
     void setNightQuiet(bool on);
+
+    QString serverUrl() const { return m_serverUrl; }
+    QString wifiName() const { return m_wifiName; }
+    bool networkOnline() const { return m_networkOnline; }
+
+    // 管理后台：保存服务器地址（演示版只保存在内存）。
+    Q_INVOKABLE bool saveNetwork(const QString &serverUrl);
 
     Q_INVOKABLE void pair(const QString &code, const QString &role);
     Q_INVOKABLE void unpair();
@@ -52,6 +62,7 @@ signals:
     void permissionChanged();
     void kioskChanged();
     void voiceChanged();
+    void networkChanged();
     void sosTriggered(int level);
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
@@ -65,4 +76,7 @@ private:
     bool m_kioskActive = false;
     bool m_voiceEnabled = true;
     bool m_nightQuiet = true;
+    QString m_serverUrl = QStringLiteral("https://api.yiban.example/v1");
+    QString m_wifiName = QStringLiteral("Home-2.4G");
+    bool m_networkOnline = true;
 };

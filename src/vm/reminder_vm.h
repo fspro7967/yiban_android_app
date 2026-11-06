@@ -15,6 +15,8 @@ class ReminderVM : public QObject
 
     Q_PROPERTY(QVariantList today READ today NOTIFY todayChanged)
     Q_PROPERTY(QVariantMap current READ current NOTIFY currentChanged)
+    Q_PROPERTY(QVariantMap next READ next NOTIFY currentChanged)
+    Q_PROPERTY(QVariantList upcoming READ upcoming NOTIFY currentChanged)
     Q_PROPERTY(int todayDone READ todayDone NOTIFY todayChanged)
     Q_PROPERTY(int todayTotal READ todayTotal NOTIFY todayChanged)
     Q_PROPERTY(int pendingCount READ pendingCount NOTIFY todayChanged)
@@ -28,6 +30,8 @@ public:
 
     QVariantList today() const;
     QVariantMap current() const;
+    QVariantMap next() const;
+    QVariantList upcoming() const;
     int todayDone() const;
     int todayTotal() const;
     int pendingCount() const;

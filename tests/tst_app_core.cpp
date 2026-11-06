@@ -49,6 +49,7 @@ private slots:
     void repeatedConfirmLogsSingleEvent();
     void unknownOccurrenceIsRejected();
     void addingPlanKeepsTodaysProgress();
+    void nextDayPreviewAfterTodayDone();
 
 private:
     // 建一条 5~30 分钟之后的 daily 计划，返回 planId；临近午夜返回 0（调用方 QSKIP）。
@@ -326,6 +327,40 @@ void FacadeCoreTest::unknownOccurrenceIsRejected()
     QString error;
     QVERIFY(!AppCore::instance()->confirm(123456789, &error));
     QCOMPARE(error, QStringLiteral("occurrence_not_found"));
+}
+
+void FacadeCoreTest::nextDayPreviewAfterTodayDone()
+{
+    AppCore *core = AppCore::instance();
+
+    for (const QVariant &entry : core->occurrencesToday()) {
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("confirmed"))
+            continue;
+        QVERIFY(core->confirm(occ.value(QStringLiteral("occurrenceId")).toLongLong()));
+    }
+    QVERIFY(core->currentOccurrence().isEmpty());
+    QCOMPARE(core->todayDone(), core->todayTotal());
+
+    const QVariantMap next = core->nextUpcomingOccurrence();
+    QVERIFY(!next.isEmpty());
+    QCOMPARE(next.value(QStringLiteral("title")).toString(), QStringLiteral("晨起喝水"));
+    QCOMPARE(next.value(QStringLiteral("dayLabel")).toString(), QStringLiteral("明天"));
+    QVERIFY(next.value(QStringLiteral("isTomorrow")).toBool());
+    QVERIFY(next.value(QStringLiteral("preview")).toBool());
+    QVERIFY(next.value(QStringLiteral("dueTs")).toLongLong() > core->nowMs());
+    QVERIFY(next.value(QStringLiteral("diffMinutes")).toInt() >= 0);
+    QVERIFY(!next.value(QStringLiteral("canConfirm")).toBool());
+    QVERIFY(!next.value(QStringLiteral("canSnooze")).toBool());
+
+    const QVariantList upcoming = core->upcomingOccurrences();
+    QCOMPARE(upcoming.size(), 4);
+    for (const QVariant &entry : upcoming) {
+        const QVariantMap occ = entry.toMap();
+        QCOMPARE(occ.value(QStringLiteral("state")).toString(), QStringLiteral("pending"));
+        QCOMPARE(occ.value(QStringLiteral("preview")).toBool(), true);
+        QVERIFY(occ.value(QStringLiteral("dueTs")).toLongLong() > core->nowMs());
+    }
 }
 
 void FacadeCoreTest::addingPlanKeepsTodaysProgress()

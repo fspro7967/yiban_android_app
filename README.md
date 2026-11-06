@@ -19,7 +19,9 @@ PlanVM / RecordVM / SyncVM / DeviceVM / ProfileVM）的方法、只读它们的�
 | 新建提醒 | 名称、时间（±15 分钟 + 常用时刻）、剂量、备注、重复方式；校验名称与已过时间 |
 | 记一笔 | 喝水 8 杯、睡眠起止、活动累计；一键记录，不需要打字 |
 | 统计 | 近 7 天 / 近 30 天；完成率、连续天数、漏做次数、Canvas 柱状图、语音播报总结 |
-| 设置 | 三档字号、语音播报、夜间安静、家人电话、配对状态、演示工具 |
+| 设置 | 三档字号、语音播报、夜间安静、家人电话、配对状态、看护人后台入口、演示工具 |
+| 看护人验证 | 必须照抄“我是看护人”五个字；60 秒未完成自动回主界面；上下两个退出键 |
+| 管理后台 | 修改紧急联系人、服务器地址、查看同步状态；仅验证成功后进入 |
 | 全屏提醒 | 深锈红渐变、大时间、药名/剂量/备注、2 分钟后通知家人、112dp 确认按钮、稍后 10 分钟、再听一遍 |
 | 紧急呼救 | 首页长按 3 秒 → 5 秒倒计时可取消 → 已通知家人 |
 
@@ -32,6 +34,10 @@ PlanVM / RecordVM / SyncVM / DeviceVM / ProfileVM）的方法、只读它们的�
 - [设置](screenshots/06-settings.png)
 - [全屏到点提醒](screenshots/07-reminder-fullscreen.png)
 - [紧急呼救](screenshots/08-sos-call.png)
+- [今日完成后显示明天](screenshots/10-next-day.png)
+- [看护人验证](screenshots/11-caregiver-gate.png)
+- [管理后台](screenshots/12-admin.png)
+- [设置页底部的看护人入口](screenshots/13-settings-admin.png)
 
 ## 运行
 
@@ -46,8 +52,10 @@ cmake --build build-desktop -j6
 单元测试（facade 契约：状态机、ID 编码、错误码、事件去重）：
 
 ```bash
-cmake --build build-desktop -j6
-QT_QPA_PLATFORM=offscreen ./build-desktop/tests/tst_app_core
+cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH=/opt/Qt/6.11.1/gcc_64 -DBUILD_TESTING=ON
+cmake --build build-verify --target tst_app_core -j6
+QT_QPA_PLATFORM=offscreen ./build-verify/tests/tst_app_core
 ```
 
 Android APK（Qt 6.11.1 Android arm64 kit，需 SDK/NDK 与 JDK）：
@@ -138,6 +146,8 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 - **稍后限次**：每条提醒最多推迟 3 次，避免一直推迟导致漏服。
 - **布局防误触**：首页只保留 4 个 2×2 大入口，单屏选项不超过 4 个；导航与操作按钮
   全宽或半宽，避免小图标并排。
+- **看护人后台两道门槛**：入口放在设置页最底部；进入后必须先到验证页，照抄“我是看护人”
+  五个字。60 秒没输完自动回主界面，点退出或按返回键也直接退出。
 
 ### 4. 事件提醒醒目
 
@@ -170,6 +180,8 @@ qml/
   RecordPage.qml        喝水/睡眠/活动记录
   StatsPage.qml         7/30 天统计
   SettingsPage.qml      设置与演示工具
+  CaregiverGatePage.qml 看护人验证缓冲页（60 秒超时）
+  AdminPage.qml         看护人管理后台（联系人、网络、同步）
   ReminderScreen.qml    全屏到点提醒
   CallScreen.qml        呼救倒计时
   SosButton.qml         长按 3 秒 SOS
@@ -187,7 +199,7 @@ src/vm/
 src/comm/
   http_client.*         唯一 HTTP 落点（当前只有离线实现，B2 补真实客户端）
 tests/
-  tst_app_core.cpp      facade 契约单测（14 例）
+  tst_app_core.cpp      facade 契约单测（15 例）
 docs/
   端上接口规范_v1.1.md   ★ 冻结的接口/形状/状态机/错误码
   后端交接清单.md       给 B1/B2 的逐文件落点与顺序
@@ -207,7 +219,7 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
 
 | UI 动作 | 门面调用 | 后端落点 |
 | --- | --- | --- |
-| 今日提醒 / 下一条 | `ReminderVM.today` / `ReminderVM.current` | `GET /v1/state?since=` |
+| 今日提醒 / 下一条 | `ReminderVM.today` / `ReminderVM.current`；今天完成后用 `ReminderVM.next` 显示明天 | `GET /v1/state?since=` |
 | 完成 / 推迟 / 撤销 | `ReminderVM.confirm/snooze/undo` | `POST /v1/events` |
 | 通知家人 | `ReminderVM.escalate` | `POST /v1/events` + `POST /v1/alarm` |
 | 新建 / 修改 / 删除提醒 | `PlanVM.createPlan/updatePlan/deletePlan` | `POST/PATCH/DELETE /v1/plans` |
@@ -230,7 +242,7 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
 - 无 TalkBack 读屏支持：Qt QML 的无障碍树在 Android 上能力有限；本设计以大字、高对比、
   语音播报为主要补偿手段。
 - 演示数据只存在内存（`AppCore::seedDemo()`），重启恢复默认；B1 换 SQLite 后消失。
-  设置项（字号、语音开关）也未做持久化，同样在 B1/B2 的落点里。
+  设置项（字号、语音开关）、管理后台里改的紧急联系人和服务器地址都只保存在内存，重启后恢复默认值；真实版需要后端 profile / 设备配置接口。
 - 语音依赖设备 TTS 引擎；`AndroidManifest.xml` 已加 Android 11+ 的 `TTS_SERVICE` 查询声明。
 - 新建页面向老人只暴露“每天 / 每周 / 每月 / 仅一次”四种常用重复（对应规则 JSON 见规范 §6）；
   interval / course / meal_offset 不进端上，更适合放到照护者端或后续“高级选项”。
@@ -240,9 +252,9 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
 ## 验证
 
 - `qmllint -s qml/*.qml`：无语法错误（facade 单例的误报见“运行”一节说明）。
-- `tests/tst_app_core`：14 例全绿（状态机、ID 编码、错误码、事件去重）；
+- `tests/tst_app_core`：15 例全绿（状态机、ID 编码、错误码、事件去重）；
   `CTest` 集成，`BUILD_TESTING=ON`（默认）即可跑。
 - 桌面 `build-desktop` 编译通过，离屏启动无 QML 运行时错误。
 - Android `build` 的 `apk` 目标构建通过，产物 `build/android-build/yiban_android_app.apk`。
-- 8 张页面截图 412×915，由开发构建的截图钩子生成（`YIBAN_DEV_SHOTS=ON`，
+- 12 张页面截图 412×915，由开发构建的截图钩子生成（`YIBAN_DEV_SHOTS=ON`，
   环境变量 `YIBAN_SHOT` / `YIBAN_PAGE` / `YIBAN_SHOT_OVERLAY`），提交前人工看过每页。

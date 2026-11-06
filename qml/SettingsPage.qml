@@ -11,6 +11,7 @@ Item {
 
     signal back()
     signal sosRequested()
+    signal adminRequested()
 
     function callCaregiver() {
         var number = ProfileVM.caregiverPhone.replace(/\s/g, "")
@@ -36,6 +37,7 @@ Item {
 
         Flickable {
             id: scroll
+            objectName: "settingsScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: page.theme.pageMargin
@@ -286,6 +288,65 @@ Item {
                             text: "重新配对"
                             kind: "secondary"
                             onClicked: Notify.info("演示版：配对接口尚未接入")
+                        }
+                    }
+                }
+
+                AppText {
+                    width: list.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "看护人设置"
+                }
+
+                Rectangle {
+                    width: list.width
+                    height: adminColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: page.theme.surface
+                    border.width: 2
+                    border.color: page.theme.line
+
+                    Column {
+                        id: adminColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(12)
+                        spacing: page.theme.gapSmall
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "heading"
+                            text: "管理后台"
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "body"
+                            color: page.theme.inkSoft
+                            text: "紧急联系人、网络地址和同步设置。"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.amberInk
+                            text: "需要输入验证语，仅看护人可进入。"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        AppButton {
+                            width: parent.width
+                            height: page.theme.touch
+                            theme: page.theme
+                            text: "进入管理后台"
+                            kind: "secondary"
+                            onClicked: page.adminRequested()
                         }
                     }
                 }

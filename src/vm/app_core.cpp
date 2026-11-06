@@ -59,6 +59,19 @@ qint64 midnightMs(const QDate &day)
     return QDateTime(day, QTime(0, 0)).toMSecsSinceEpoch();
 }
 
+QString dayLabelFor(const QDate &day, const QDate &today)
+{
+    const int offset = today.daysTo(day);
+    if (offset == 1)
+        return QStringLiteral("明天");
+    if (offset == 2)
+        return QStringLiteral("后天");
+    return QStringLiteral("%1月%2日 周%3")
+        .arg(day.month())
+        .arg(day.day())
+        .arg(weekdayShort(day.dayOfWeek()));
+}
+
 QString normalizeKind(const QVariantMap &rule)
 {
     const QString kind = rule.value(QStringLiteral("kind")).toString();
@@ -443,6 +456,78 @@ QVariantList AppCore::occurrencesToday() const
         return a.toMap().value(QStringLiteral("dueTs")).toLongLong()
             < b.toMap().value(QStringLiteral("dueTs")).toLongLong();
     });
+    return out;
+}
+
+QVariantList AppCore::occurrencesForDay(const QDate &day) const
+{
+    QVariantList out;
+    for (const QVariant &entry : m_plans) {
+        const QVariantMap plan = entry.toMap();
+        if (plan.value(QStringLiteral("deleted")).toBool())
+            continue;
+        if (!planFiresOn(plan, day))
+            continue;
+
+        const QVariantMap rule = plan.value(QStringLiteral("rule")).toMap();
+        const QList<int> minutes = dueMinutesFor(rule, day);
+        for (int seq = 0; seq < minutes.size(); ++seq) {
+            const qint64 occurrenceId = plan.value(QStringLiteral("planId")).toLongLong()
+                    * kOccurrenceIdBase
+                + (day.toJulianDay() % 10000000LL) * 100 + seq;
+            QVariantMap occ;
+            occ[QStringLiteral("occurrenceId")] = occurrenceId;
+            occ[QStringLiteral("planId")] = plan.value(QStringLiteral("planId"));
+            occ[QStringLiteral("title")] = plan.value(QStringLiteral("title"));
+            occ[QStringLiteral("dose")] = plan.value(QStringLiteral("dose"));
+            occ[QStringLiteral("note")] = plan.value(QStringLiteral("note"));
+            occ[QStringLiteral("dueTs")] = midnightMs(day) + minutes.at(seq) * 60 * 1000;
+            occ[QStringLiteral("state")] = QStringLiteral("pending");
+            occ[QStringLiteral("snoozeCount")] = 0;
+            occ[QStringLiteral("snoozeUntilTs")] = 0;
+            occ[QStringLiteral("windowMin")] = plan.value(QStringLiteral("windowMin"));
+            occ[QStringLiteral("escalateAfterMin")] =
+                plan.value(QStringLiteral("escalateAfterMin"));
+
+            occ = publicOccurrence(plan, occ);
+            occ[QStringLiteral("canConfirm")] = false;
+            occ[QStringLiteral("canSnooze")] = false;
+            occ[QStringLiteral("preview")] = true;
+            occ[QStringLiteral("dayLabel")] = dayLabelFor(day, m_day);
+            occ[QStringLiteral("isTomorrow")] = (day == m_day.addDays(1));
+            out.append(occ);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const QVariant &a, const QVariant &b) {
+        return a.toMap().value(QStringLiteral("dueTs")).toLongLong()
+            < b.toMap().value(QStringLiteral("dueTs")).toLongLong();
+    });
+    return out;
+}
+
+QVariantList AppCore::upcomingOccurrences() const
+{
+    // 找到下一个有提醒的日期，返回当天完整清单。扫一年，覆盖“每月/仅一次”等规则。
+    for (int offset = 1; offset <= 366; ++offset) {
+        const QVariantList list = occurrencesForDay(m_day.addDays(offset));
+        if (!list.isEmpty())
+            return list;
+    }
+    return {};
+}
+
+QVariantMap AppCore::nextUpcomingOccurrence() const
+{
+    const QVariantList list = upcomingOccurrences();
+    if (list.isEmpty())
+        return {};
+
+    QVariantMap out = list.first().toMap();
+    const qint64 dueTs = out.value(QStringLiteral("dueTs")).toLongLong();
+    out[QStringLiteral("diffMinutes")] =
+        qMax(0, static_cast<int>(qCeil((dueTs - m_nowMs) / 60000.0)));
+    out[QStringLiteral("displayTime")] = hhmmFromMs(dueTs);
+    out[QStringLiteral("dueNow")] = false;
     return out;
 }
 

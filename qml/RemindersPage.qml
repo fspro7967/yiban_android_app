@@ -100,6 +100,45 @@ Item {
                     }
                 }
 
+                Rectangle {
+                    width: list.width
+                    height: nextHint.implicitHeight + page.theme.gap
+                    radius: page.theme.radiusSmall
+                    color: page.theme.surfaceAlt
+                    border.width: 1
+                    border.color: page.theme.line
+                    visible: ReminderVM.upcoming.length > 0
+
+                    Column {
+                        id: nextHint
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(8)
+                        spacing: page.theme.px(2)
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: ReminderVM.upcoming.length > 0
+                                ? "接下来 · " + ReminderVM.upcoming[0].dayLabel + "还有 " + ReminderVM.upcoming.length + " 条"
+                                : ""
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "body"
+                            text: ReminderVM.upcoming.length > 0
+                                ? Fmt.hhmm(ReminderVM.upcoming[0].dueTs) + "  " + ReminderVM.upcoming[0].title
+                                : ""
+                            elide: Text.ElideRight
+                            wrapMode: Text.NoWrap
+                        }
+                    }
+                }
+
                 Repeater {
                     model: ReminderVM.today
 
@@ -204,7 +243,7 @@ Item {
                                     text: card.isDone ? "已完成" : card.isMissed ? "已错过" : "✓ 完成"
                                     kind: "primary"
                                     enabled: card.canComplete
-                                    onClicked: page.confirmItem(card.modelData.id)
+                                    onClicked: page.confirmItem(card.modelData.occurrenceId)
                                 }
 
                                 AppButton {
@@ -220,9 +259,9 @@ Item {
                                     enabled: card.isDone || card.actionable
                                     onClicked: {
                                         if (card.isDone)
-                                            page.reopenItem(card.modelData.id)
+                                            page.reopenItem(card.modelData.occurrenceId)
                                         else if (card.actionable)
-                                            page.snoozeItem(card.modelData.id)
+                                            page.snoozeItem(card.modelData.occurrenceId)
                                     }
                                 }
                             }
@@ -269,6 +308,74 @@ Item {
                             role: "body"
                             color: page.theme.inkSoft
                             text: "可以点右上角“新建”，加一条吃药或喝水提醒。"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: list.width
+                    height: upcomingColumn.implicitHeight + page.theme.gap * 2
+                    radius: page.theme.radius
+                    color: page.theme.surfaceAlt
+                    border.width: 2
+                    border.color: page.theme.line
+                    visible: ReminderVM.upcoming.length > 0
+
+                    Column {
+                        id: upcomingColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.gap
+                        spacing: page.theme.gapSmall
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "body"
+                            color: page.theme.inkSoft
+                            text: "接下来"
+                        }
+
+                        Repeater {
+                            model: ReminderVM.upcoming
+
+                            delegate: RowLayout {
+                                required property var modelData
+                                width: parent.width
+                                spacing: page.theme.gapSmall
+
+                                AppText {
+                                    Layout.preferredWidth: page.theme.px(96)
+                                    theme: page.theme
+                                    role: "label"
+                                    color: page.theme.primary
+                                    text: modelData.dayLabel
+                                }
+
+                                AppText {
+                                    theme: page.theme
+                                    role: "heading"
+                                    text: Fmt.hhmm(modelData.dueTs)
+                                }
+
+                                AppText {
+                                    Layout.fillWidth: true
+                                    theme: page.theme
+                                    role: "body"
+                                    text: modelData.title
+                                    elide: Text.ElideRight
+                                    wrapMode: Text.NoWrap
+                                }
+                            }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: "到这一天会自动出现在“今天的提醒”里。"
                             wrapMode: Text.WordWrap
                         }
                     }

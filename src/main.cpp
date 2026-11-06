@@ -38,9 +38,45 @@ int main(int argc, char *argv[])
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         const int delay = qEnvironmentVariableIntValue("YIBAN_SHOT_DELAY");
         if (window) {
+            if (auto *vm = engine.singletonInstance<QObject *>(
+                    QStringLiteral("SmartGlasses"), QStringLiteral("ReminderVM"))) {
+                if (qEnvironmentVariableIsSet("YIBAN_ALL_DONE")) {
+                    const QVariantList today = vm->property("today").toList();
+                    for (const QVariant &entry : today) {
+                        const QVariantMap occ = entry.toMap();
+                        if (occ.value(QStringLiteral("state")).toString() != QStringLiteral("confirmed"))
+                            QMetaObject::invokeMethod(vm, "confirm",
+                                                      Q_ARG(qint64, occ.value(QStringLiteral("occurrenceId")).toLongLong()));
+                    }
+                }
+            }
             if (const QByteArray page = qgetenv("YIBAN_PAGE"); !page.isEmpty()) {
                 QMetaObject::invokeMethod(window, "navigate", Q_ARG(QVariant,
                                                                      QString::fromLocal8Bit(page)));
+            }
+            if (qEnvironmentVariableIsSet("YIBAN_GATE_UNLOCK")) {
+                // 仅截图回归：自动填入验证语并提交，检查缓冲页 -> 管理后台。
+                QTimer::singleShot(600, window, [window] {
+                    auto *gate = window->findChild<QObject *>(QStringLiteral("caregiverGate"));
+                    if (!gate)
+                        return;
+                    if (auto *input = gate->findChild<QObject *>(QStringLiteral("phraseInput")))
+                        input->setProperty("text", QStringLiteral("我是看护人"));
+                    QMetaObject::invokeMethod(gate, "checkPhrase");
+                });
+            }
+            if (qEnvironmentVariableIsSet("YIBAN_SCROLL_END")) {
+                // 仅截图回归：把设置页滚到底，检查看护人入口。
+                QTimer::singleShot(700, window, [window] {
+                    auto *scroll = window->findChild<QObject *>(QStringLiteral("settingsScroll"));
+                    if (!scroll)
+                        scroll = window->findChild<QObject *>(QStringLiteral("adminScroll"));
+                    if (scroll) {
+                        const qreal bottom = scroll->property("contentHeight").toReal()
+                                             - scroll->property("height").toReal();
+                        scroll->setProperty("contentY", qMax<qreal>(0, bottom));
+                    }
+                });
             }
             const QByteArray overlay = qgetenv("YIBAN_SHOT_OVERLAY");
             const int settle = delay > 0 ? delay : 1200;

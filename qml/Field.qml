@@ -10,6 +10,9 @@ Item {
     property string label: ""
     property string placeholder: ""
     property alias text: input.text
+    property alias inputMethodHints: input.inputMethodHints
+    property alias echoMode: input.echoMode
+    property int fontSize: theme ? theme.fontBody : 26
     property int maxLength: 40
 
     implicitHeight: column.implicitHeight
@@ -61,7 +64,7 @@ Item {
                 anchors.rightMargin: field.theme.px(16)
                 verticalAlignment: TextInput.AlignVCenter
                 font.family: field.theme.fontFamily
-                font.pixelSize: field.theme.fontBody
+                font.pixelSize: field.fontSize
                 color: field.theme.ink
                 selectionColor: field.theme.primary
                 selectedTextColor: "#FFFFFF"

@@ -41,6 +41,10 @@ ApplicationWindow {
             target = statsComponent
         else if (pageName === "settings")
             target = settingsComponent
+        else if (pageName === "caregiverGate")
+            target = caregiverGateComponent
+        else if (pageName === "admin")
+            target = adminComponent
         if (!target)
             return
         stack.push(target)
@@ -49,6 +53,16 @@ ApplicationWindow {
     function goBack() {
         if (stack.depth > 1)
             stack.pop()
+    }
+
+    function goHome() {
+        if (stack.depth > 1)
+            stack.pop(null)
+    }
+
+    function showAdmin() {
+        if (stack.depth > 1)
+            stack.replace(adminComponent)
     }
 
     function startSos() {
@@ -101,6 +115,12 @@ ApplicationWindow {
             }
             if (reminderScreen.active) {
                 // 提醒页强制二选一，避免误按返回键把提醒藏起来
+                event.accepted = true
+                return
+            }
+            if (stack.currentItem && stack.currentItem.objectName === "caregiverGate") {
+                // 缓冲页按返回键等同退出，直接回主界面
+                window.goHome()
                 event.accepted = true
                 return
             }
@@ -164,6 +184,25 @@ ApplicationWindow {
             theme: window.theme
             onBack: window.goBack()
             onSosRequested: window.startSos()
+            onAdminRequested: window.navigate("caregiverGate")
+        }
+    }
+
+    Component {
+        id: caregiverGateComponent
+        CaregiverGatePage {
+            objectName: "caregiverGate"
+            theme: window.theme
+            onUnlocked: window.showAdmin()
+            onCancelled: window.goHome()
+        }
+    }
+
+    Component {
+        id: adminComponent
+        AdminPage {
+            theme: window.theme
+            onBack: window.goBack()
         }
     }
 

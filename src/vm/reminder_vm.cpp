@@ -25,6 +25,16 @@ QVariantMap ReminderVM::current() const
     return AppCore::instance()->currentOccurrence();
 }
 
+QVariantMap ReminderVM::next() const
+{
+    return AppCore::instance()->nextUpcomingOccurrence();
+}
+
+QVariantList ReminderVM::upcoming() const
+{
+    return AppCore::instance()->upcomingOccurrences();
+}
+
 int ReminderVM::todayDone() const
 {
     return AppCore::instance()->todayDone();

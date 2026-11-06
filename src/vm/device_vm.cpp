@@ -63,6 +63,27 @@ void DeviceVM::setNightQuiet(bool on)
     emit voiceChanged();
 }
 
+bool DeviceVM::saveNetwork(const QString &serverUrl)
+{
+    const QString trimmed = serverUrl.trimmed();
+    if (!trimmed.startsWith(QStringLiteral("https://"))
+        && !trimmed.startsWith(QStringLiteral("http://"))) {
+        emit commandRejected(QStringLiteral("bad_server_url"),
+                             QStringLiteral("服务器地址要以 https:// 开头"));
+        return false;
+    }
+    if (trimmed.length() < 12 || trimmed.length() > 200) {
+        emit commandRejected(QStringLiteral("bad_server_url"),
+                             QStringLiteral("服务器地址长度不对"));
+        return false;
+    }
+    m_serverUrl = trimmed;
+    m_networkOnline = true;
+    emit networkChanged();
+    emit toast(QStringLiteral("网络设置已保存（演示版）"));
+    return true;
+}
+
 void DeviceVM::pair(const QString &code, const QString &role)
 {
     static const QRegularExpression sixDigits(QStringLiteral("\\d{6}"));

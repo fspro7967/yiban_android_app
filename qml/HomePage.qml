@@ -12,7 +12,12 @@ Item {
     signal openPage(string page)
     signal sosActivated()
 
-    readonly property var next: ReminderVM.current
+    readonly property var todayNext: ReminderVM.current
+    readonly property bool hasToday: todayNext && todayNext.occurrenceId !== undefined
+    readonly property var futureNext: ReminderVM.next
+    readonly property bool hasFuture: futureNext && futureNext.occurrenceId !== undefined
+    readonly property var next: hasToday ? todayNext : futureNext
+    readonly property bool hasNext: hasToday || hasFuture
 
     ColumnLayout {
         anchors.fill: parent
@@ -65,11 +70,11 @@ Item {
                     width: body.width
                     height: heroBody.implicitHeight + page.theme.px(8) * 2
                     radius: page.theme.radius
-                    color: !page.next ? page.theme.primarySoft
+                    color: !page.hasNext ? page.theme.primarySoft
                         : page.next.dueNow ? page.theme.amberSoft
                         : page.theme.surface
                     border.width: 2
-                    border.color: !page.next ? page.theme.primary
+                    border.color: !page.hasNext ? page.theme.primary
                         : page.next.dueNow ? page.theme.amber
                         : page.theme.line
 
@@ -87,10 +92,10 @@ Item {
                             AppText {
                                 theme: page.theme
                                 role: "label"
-                                color: page.next && page.next.dueNow ? page.theme.amberInk : page.theme.inkSoft
-                                text: !page.next ? "今天"
-                                    : page.next.state === "snoozed" ? "已推迟到"
-                                    : "下一条提醒"
+                                color: page.hasNext && page.next.dueNow ? page.theme.amberInk : page.theme.inkSoft
+                                text: !page.hasNext ? "今天"
+                                    : page.hasToday ? (page.next.state === "snoozed" ? "已推迟到" : "下一条提醒")
+                                    : (page.next.dayLabel || "下一条提醒")
                             }
 
                             Item { Layout.fillWidth: true }
@@ -99,15 +104,22 @@ Item {
                                 theme: page.theme
                                 role: "label"
                                 font.weight: Font.DemiBold
-                                color: !page.next ? page.theme.primaryInk
+                                color: !page.hasNext ? page.theme.primaryInk
                                     : page.next.dueNow ? page.theme.amberInk
                                     : page.theme.inkSoft
                                 text: {
-                                    if (!page.next)
+                                    if (!page.hasNext)
                                         return "全部完成"
                                     if (page.next.dueNow)
                                         return "现在"
                                     var m = page.next.diffMinutes
+                                    if (page.hasToday && page.next.state === "snoozed"
+                                            && page.next.snoozeUntilTs > ReminderVM.nowMs) {
+                                        m = Math.ceil((page.next.snoozeUntilTs - ReminderVM.nowMs) / 60000)
+                                    } else if (!page.hasToday) {
+                                        m = Math.ceil((page.next.dueTs - ReminderVM.nowMs) / 60000)
+                                    }
+                                    m = Math.max(0, m)
                                     if (m < 60)
                                         return m + " 分钟后"
                                     var h = Math.floor(m / 60)
@@ -121,8 +133,8 @@ Item {
                             theme: page.theme
                             role: "display"
                             font.pixelSize: page.theme.px(46)
-                            color: page.next ? page.theme.primaryInk : page.theme.primary
-                            text: page.next ? page.next.displayTime : "✓"
+                            color: page.hasNext ? page.theme.primaryInk : page.theme.primary
+                            text: page.hasNext ? page.next.displayTime : "✓"
                             wrapMode: Text.NoWrap
                         }
 
@@ -130,7 +142,7 @@ Item {
                             width: parent.width
                             theme: page.theme
                             role: "heading"
-                            text: page.next ? page.next.title : "今天的提醒都完成啦"
+                            text: page.hasNext ? page.next.title : "今天的提醒都完成啦"
                             wrapMode: Text.WordWrap
                         }
 
@@ -139,7 +151,7 @@ Item {
                             theme: page.theme
                             role: "body"
                             color: page.theme.inkSoft
-                            text: page.next ? (page.next.dose || "") : "记得喝水、活动一下，晚上再测一次血压"
+                            text: page.hasNext ? (page.next.dose || "") : "记得喝水、活动一下，晚上再测一次血压"
                             wrapMode: Text.WordWrap
                         }
                     }
