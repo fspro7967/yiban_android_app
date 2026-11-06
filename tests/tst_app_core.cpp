@@ -285,6 +285,13 @@ void FacadeCoreTest::statsShape()
         QVERIFY(day.contains(QStringLiteral("done")));
         QVERIFY(day.contains(QStringLiteral("total")));
         QVERIFY(day.contains(QStringLiteral("rate")));
+        QVERIFY(day.contains(QStringLiteral("expected")));
+        QVERIFY(day.contains(QStringLiteral("confirmed")));
+        QVERIFY(day.contains(QStringLiteral("missed")));
+        QCOMPARE(day.value(QStringLiteral("expected")).toInt(),
+                 day.value(QStringLiteral("total")).toInt());
+        QCOMPARE(day.value(QStringLiteral("confirmed")).toInt(),
+                 day.value(QStringLiteral("done")).toInt());
         QVERIFY(day.value(QStringLiteral("rate")).toInt() >= 0);
         QVERIFY(day.value(QStringLiteral("rate")).toInt() <= 100);
         QVERIFY(day.value(QStringLiteral("done")).toInt() <= day.value(QStringLiteral("total")).toInt());

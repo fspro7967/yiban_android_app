@@ -37,7 +37,7 @@ Item {
         }
         page.error = ""
         // rule 的形状是冻结契约（docs/端上接口规范_v1.1.md 第 2 节）：
-        // daily / weekly / monthly / interval / course / meal_offset / once。
+        // 端上只支持 daily / weekly / monthly / once，见 docs/端上接口规范_v1.1.md §6。
         var rule = { kind: "daily", times: [page.timeText] }
         var today = new Date()
         if (page.repeatKind === "每周")
@@ -47,15 +47,16 @@ Item {
         else if (page.repeatKind === "仅一次")
             rule = { kind: "once", at: Qt.formatDateTime(today, "yyyy-MM-dd") + "T" + page.timeText + ":00" }
 
-        PlanVM.createPlan({
-            title: name,
-            dose: doseField.text.trim(),
-            note: noteField.text.trim(),
-            rule: rule,
-            windowMin: 30,
-            escalateAfterMin: 15
-        })
-        page.saved()
+        // 失败时 Main 会统一弹 commandRejected 的文案，这里不返回，避免"没建成却回到列表"。
+        if (PlanVM.createPlan({
+                title: name,
+                dose: doseField.text.trim(),
+                note: noteField.text.trim(),
+                rule: rule,
+                windowMin: 30,
+                escalateAfterMin: 15
+            }))
+            page.saved()
     }
 
     ColumnLayout {

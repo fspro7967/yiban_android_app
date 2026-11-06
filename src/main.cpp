@@ -54,11 +54,10 @@ int main(int argc, char *argv[])
                     // 拍呼救倒计时：走 SosButton 同一条入口。
                     QMetaObject::invokeMethod(window, "startSos");
                 } else {
-                    for (const QString &name : {QStringLiteral("reminderScreen"),
-                                                QStringLiteral("callScreen")}) {
-                        if (auto *over = window->findChild<QObject *>(name))
-                            QMetaObject::invokeMethod(over, "close");
-                    }
+                    if (auto *reminder = window->findChild<QObject *>(QStringLiteral("reminderScreen")))
+                        QMetaObject::invokeMethod(reminder, "close");
+                    if (auto *call = window->findChild<QObject *>(QStringLiteral("callScreen")))
+                        QMetaObject::invokeMethod(call, "cancel");
                 }
                 QTimer::singleShot(overlay.isEmpty() ? 250 : 900, window, [window, shot] {
                     window->grabWindow().save(QString::fromLocal8Bit(shot));
