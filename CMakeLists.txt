@@ -85,7 +85,7 @@ unset(_qt_toolchain_normalized)
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Quick Qml)
 
 # TextToSpeech 用于提醒/统计的语音播报。
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech)
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql)
 
 # QTP0001 NEW：QML 模块资源前缀使用 /qt/qml（默认 QML 导入路径）。
 # OLD 行为（资源放在 :/SmartGlasses/）在 Qt 6.11 上找不到 qmldir，
@@ -96,9 +96,32 @@ find_package(Qt5LinguistTools QUIET)
 
 set(TS_FILES yiban_android_app_zh_CN.ts)
 
+# 端上分层：qml/ 是 F1 的界面，src/vm 是给后端填实现的 facade，
+# src/comm 是 B2 唯一的网络出口。详见 docs/端上接口规范_v1.1.md。
+set(VM_SOURCES
+        src/vm/app_core.h
+        src/vm/app_core.cpp
+        src/vm/reminder_vm.h
+        src/vm/reminder_vm.cpp
+        src/vm/plan_vm.h
+        src/vm/plan_vm.cpp
+        src/vm/record_vm.h
+        src/vm/record_vm.cpp
+        src/vm/sync_vm.h
+        src/vm/sync_vm.cpp
+        src/vm/device_vm.h
+        src/vm/device_vm.cpp
+        src/vm/profile_vm.h
+        src/vm/profile_vm.cpp
+        src/vm/facade_errors.h
+        src/comm/http_client.h
+        src/comm/http_client.cpp
+)
+
 set(PROJECT_SOURCES
         ${TS_FILES}
         src/main.cpp
+        ${VM_SOURCES}
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -117,6 +140,13 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         get_filename_component(_qml_name "${_qml_file}" NAME)
         set_source_files_properties("${_qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${_qml_name}")
     endforeach()
+
+    # qml/Fmt.qml、Undo.qml、Notify.qml 是 pragma Singleton 页面工具；
+    # 文件经 GLOB 加入时自动扫描不生效，需要显式标记，否则 qmldir 里会当成普通组件。
+    foreach(_singleton Fmt Undo Notify)
+        set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/qml/${_singleton}.qml"
+                                    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+    endforeach()
     unset(_qml_file)
     unset(_qml_name)
 
@@ -125,6 +155,8 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         VERSION 1.0
         QML_FILES
             ${QML_FILES}
+        SOURCES
+            ${VM_SOURCES}
     )
 
     set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_APP_NAME "颐伴")
@@ -155,11 +187,20 @@ else()
     endif()
 endif()
 
+# qmltyperegistrations 生成文件用 <device_vm.h> 这样的裸文件名 include 头，
+# 因此 facade 目录必须进 include path。
+target_include_directories(yiban_android_app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vm
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/comm
+)
+
 target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::Quick
     Qt${QT_VERSION_MAJOR}::Qml
     Qt${QT_VERSION_MAJOR}::QuickControls2
     Qt${QT_VERSION_MAJOR}::TextToSpeech
+    Qt${QT_VERSION_MAJOR}::Network
+    Qt${QT_VERSION_MAJOR}::Sql
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -299,8 +340,8 @@ endif()
 # ----------------------------------------------------------------------------
 # 只在非 Android 构建中生成：测试目标是给构建机的 host Qt 跑的桌面程序，
 # 不需要 Android 设备或 NDK，因此 APK 构建完全不受影响。
-# 本仓库当前唯一可离线验证的逻辑是 sentencesplitter（纯自由函数，
-# 不依赖 QObject / 信号槽 / 设备）——详见 tests/CMakeLists.txt。
+# 测的是端上 facade 契约：occurrenceId 编码、状态机迁移、rule 校验、
+# 错误码与事件去重——详见 tests/CMakeLists.txt。
 include(CTest)
 if (BUILD_TESTING AND NOT ANDROID)
     add_subdirectory(tests)

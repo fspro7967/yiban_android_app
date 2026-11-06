@@ -1,0 +1,36 @@
+{
+  "next_seq": 47,
+  "server_time": 1793981000000,
+  "occurrences": [
+    {
+      "occurrence_id": 312000001234567800,
+      "plan_id": 3,
+      "title": "吃降糖药",
+      "dose": "二甲双胍 1 片",
+      "note": "随午餐服用",
+      "due_ts": 1793980800000,
+      "state": "notified",
+      "snooze_count": 0,
+      "snooze_until_ts": 0,
+      "window_min": 30,
+      "escalate_after_min": 15,
+      "updated_seq": 46,
+      "last_event_id": "a1b2c3d4-1111-4aaa-8bbb-000000000001"
+    },
+    {
+      "occurrence_id": 412000001234567900,
+      "plan_id": 4,
+      "title": "测血压",
+      "dose": "",
+      "note": "坐 5 分钟再量",
+      "due_ts": 1794001200000,
+      "state": "pending",
+      "snooze_count": 0,
+      "snooze_until_ts": 0,
+      "window_min": 30,
+      "escalate_after_min": 15,
+      "updated_seq": 47,
+      "last_event_id": ""
+    }
+  ]
+}

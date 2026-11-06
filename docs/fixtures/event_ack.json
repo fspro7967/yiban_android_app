@@ -1,0 +1,11 @@
+{
+  "accepted": [
+    {
+      "event_id": "a1b2c3d4-1111-4aaa-8bbb-000000000001",
+      "server_seq": 46,
+      "applied": true
+    }
+  ],
+  "rejected": [],
+  "next_seq": 46
+}

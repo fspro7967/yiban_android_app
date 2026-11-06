@@ -8,13 +8,12 @@ Item {
     id: screen
 
     property Theme theme
-    property MockBackend store
     property bool active: false
     property var occ: null
     property int escalationLeft: 120
     property bool escalated: false
 
-    readonly property int snoozeLeft: occ ? Math.max(0, 3 - occ.snoozeUsed) : 3
+    readonly property int snoozeLeft: occ ? occ.snoozeRemaining : 3
 
     anchors.fill: parent
     visible: active
@@ -28,7 +27,7 @@ Item {
         escalationLeft = 120
         active = true
         if (item)
-            store.speak("提醒您：" + item.title + "。" + (item.dose || ""))
+            DeviceVM.speak("提醒您：" + item.title + "。" + (item.dose || ""), "reminder")
     }
 
     function close() {
@@ -40,15 +39,15 @@ Item {
     function confirm() {
         if (!occ)
             return
-        store.confirmOccurrence(occ.id)
+        ReminderVM.confirm(occ.occurrenceId)
         close()
     }
 
     function snooze() {
         if (!occ)
             return
-        if (store.snoozeOccurrence(occ.id, 10))
-            close()
+        ReminderVM.snooze(occ.occurrenceId)
+        close()
     }
 
     property Timer escalationTimer: Timer {
@@ -62,7 +61,7 @@ Item {
             if (screen.escalationLeft <= 0) {
                 screen.escalationLeft = 0
                 screen.escalated = true
-                screen.store.notifyCaregiver(screen.occ)
+                ReminderVM.escalate(screen.occ.occurrenceId)
             }
         }
     }
@@ -128,7 +127,7 @@ Item {
                 kind: "outlineLight"
                 onClicked: {
                     if (screen.occ)
-                        screen.store.speak("提醒您：" + screen.occ.title + "。" + (screen.occ.dose || ""))
+                        DeviceVM.speak("提醒您：" + screen.occ.title + "。" + (screen.occ.dose || ""), "reminder")
                 }
             }
         }
@@ -150,7 +149,7 @@ Item {
                     role: "display"
                     font.pixelSize: screen.theme.px(52)
                     color: screen.theme.reminderAccent
-                    text: screen.occ ? screen.occ.time : ""
+                    text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
                     wrapMode: Text.NoWrap
                 }
 
@@ -206,8 +205,8 @@ Item {
                     role: "body"
                     color: screen.theme.reminderInk
                     text: screen.escalated
-                        ? "已通知 " + screen.store.caregiverName + "，请尽快确认"
-                        : screen.store.countdownText(screen.escalationLeft) + "后通知 " + screen.store.caregiverName
+                        ? "已通知 " + ProfileVM.caregiverName + "，请尽快确认"
+                        : Fmt.countdownText(Math.ceil(screen.escalationLeft / 60)) + "通知 " + ProfileVM.caregiverName
                     wrapMode: Text.WordWrap
                 }
 

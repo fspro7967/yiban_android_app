@@ -8,10 +8,9 @@ Item {
     id: page
 
     property Theme theme
-    property MockBackend store
     property int rangeDays: 7
 
-    readonly property var chartData: page.rangeDays === 7 ? page.store.stats7 : page.store.stats30
+    readonly property var chartData: page.rangeDays === 7 ? RecordVM.stats7 : RecordVM.stats30
 
     signal back()
 
@@ -96,7 +95,7 @@ Item {
                                 role: "hero"
                                 color: page.theme.primary
                                 horizontalAlignment: Text.AlignHCenter
-                                text: page.store.averageRate(page.chartData) + "%"
+                                text: Fmt.averageRate(page.chartData) + "%"
                                 wrapMode: Text.NoWrap
                             }
 
@@ -129,7 +128,7 @@ Item {
                                 role: "hero"
                                 color: page.theme.primary
                                 horizontalAlignment: Text.AlignHCenter
-                                text: page.store.streak(page.chartData)
+                                text: Fmt.streak(page.chartData)
                                 wrapMode: Text.NoWrap
                             }
 
@@ -171,7 +170,7 @@ Item {
                             theme: page.theme
                             role: "heading"
                             color: page.theme.amberInk
-                            text: page.store.sumMissed(page.chartData) + " 次"
+                            text: Fmt.sumMissed(page.chartData) + " 次"
                         }
                     }
                 }
@@ -250,7 +249,7 @@ Item {
                             theme: page.theme
                             role: "body"
                             color: page.theme.primaryInk
-                            text: page.store.statsSummary(page.rangeDays)
+                            text: Fmt.statsSummary(page.chartData)
                             wrapMode: Text.WordWrap
                         }
 
@@ -260,7 +259,7 @@ Item {
                             theme: page.theme
                             text: "听语音播报"
                             kind: "secondary"
-                            onClicked: page.store.speak(page.store.statsSummary(page.rangeDays))
+                            onClicked: DeviceVM.speak(Fmt.statsSummary(page.chartData), "stats")
                         }
                     }
                 }

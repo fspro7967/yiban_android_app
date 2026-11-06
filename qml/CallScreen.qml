@@ -8,7 +8,6 @@ Item {
     id: screen
 
     property Theme theme
-    property MockBackend store
     property bool active: false
     property int secondsLeft: 5
     property bool sent: false
@@ -24,7 +23,7 @@ Item {
         sent = false
         active = true
         countdown.restart()
-        store.speak("正在通知家人")
+        DeviceVM.speak("正在通知家人", "sos")
     }
 
     function cancel() {
@@ -32,7 +31,7 @@ Item {
             return
         countdown.stop()
         active = false
-        store.toast("已取消呼救")
+        Notify.info("已取消呼救")
         closed()
     }
 
@@ -51,7 +50,8 @@ Item {
                 screen.secondsLeft = 0
                 screen.sent = true
                 screen.countdown.stop()
-                screen.store.toast("已通知 " + screen.store.caregiverName)
+                DeviceVM.sos(1)
+                Notify.info("已通知 " + ProfileVM.caregiverName)
             }
         }
     }
@@ -106,7 +106,7 @@ Item {
             color: "#FFFFFF"
             horizontalAlignment: Text.AlignHCenter
             text: screen.sent
-                ? "已通知 " + screen.store.caregiverName
+                ? "已通知 " + ProfileVM.caregiverName
                 : screen.secondsLeft + " 秒后通知家人"
         }
 
@@ -117,7 +117,7 @@ Item {
             color: "#FFE3C4"
             horizontalAlignment: Text.AlignHCenter
             text: screen.sent
-                ? "电话 " + screen.store.caregiverPhone + "，请保持手机畅通"
+                ? "电话 " + ProfileVM.caregiverPhone + "，请保持手机畅通"
                 : "如果按错了，现在取消还来得及"
             wrapMode: Text.WordWrap
         }

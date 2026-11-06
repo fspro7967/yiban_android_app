@@ -8,12 +8,11 @@ Item {
     id: page
 
     property Theme theme
-    property MockBackend store
     property string timeText: "12:00"
     property string repeatKind: "每天"
     property string error: ""
 
-    readonly property int timeMinutes: page.store.minutesOf(page.timeText)
+    readonly property int timeMinutes: Fmt.minutesOf(page.timeText)
     readonly property var quickTimes: ["07:00", "08:00", "12:00", "18:00"]
 
     signal back()
@@ -21,7 +20,7 @@ Item {
 
     function bump(delta) {
         var m = (page.timeMinutes + delta + 1440) % 1440
-        page.timeText = page.store.pad2(Math.floor(m / 60)) + ":" + page.store.pad2(m % 60)
+        page.timeText = Fmt.hhmmFromMinutes(m)
         page.error = ""
     }
 
@@ -32,12 +31,30 @@ Item {
             nameField.forceFocus()
             return
         }
-        if (page.timeMinutes <= page.store.nowMinutes) {
+        if (page.timeMinutes <= Fmt.nowMinutes) {
             page.error = "这个时间已经过了，请用 +15 分钟往后调。"
             return
         }
         page.error = ""
-        page.store.addReminder(name, page.timeText, doseField.text.trim(), noteField.text.trim(), page.repeatKind)
+        // rule 的形状是冻结契约（docs/端上接口规范_v1.1.md 第 2 节）：
+        // daily / weekly / monthly / interval / course / meal_offset / once。
+        var rule = { kind: "daily", times: [page.timeText] }
+        var today = new Date()
+        if (page.repeatKind === "每周")
+            rule = { kind: "weekly", weekdays: [today.getDay() === 0 ? 7 : today.getDay()], times: [page.timeText] }
+        else if (page.repeatKind === "每月")
+            rule = { kind: "monthly", day: today.getDate(), times: [page.timeText] }
+        else if (page.repeatKind === "仅一次")
+            rule = { kind: "once", at: Qt.formatDateTime(today, "yyyy-MM-dd") + "T" + page.timeText + ":00" }
+
+        PlanVM.createPlan({
+            title: name,
+            dose: doseField.text.trim(),
+            note: noteField.text.trim(),
+            rule: rule,
+            windowMin: 30,
+            escalateAfterMin: 15
+        })
         page.saved()
     }
 

@@ -1,0 +1,41 @@
+{
+  "next_seq": 20,
+  "plans": [
+    {
+      "plan_id": 1,
+      "title": "晨起喝水",
+      "dose": "温水 1 杯",
+      "note": "小口慢慢喝",
+      "rule": { "kind": "daily", "times": ["07:00"] },
+      "window_min": 30,
+      "escalate_after_min": 15,
+      "version": 2,
+      "deleted": false,
+      "updated_seq": 19
+    },
+    {
+      "plan_id": 2,
+      "title": "吃降压药",
+      "dose": "苯磺酸氨氯地平 1 片",
+      "note": "早饭后，温水送服",
+      "rule": { "kind": "daily", "times": ["08:00"] },
+      "window_min": 30,
+      "escalate_after_min": 15,
+      "version": 1,
+      "deleted": false,
+      "updated_seq": 20
+    },
+    {
+      "plan_id": 3,
+      "title": "吃降糖药",
+      "dose": "二甲双胍 1 片",
+      "note": "随午餐服用",
+      "rule": { "kind": "weekly", "weekdays": [1, 3, 5], "times": ["12:00"] },
+      "window_min": 30,
+      "escalate_after_min": 15,
+      "version": 3,
+      "deleted": true,
+      "updated_seq": 18
+    }
+  ]
+}

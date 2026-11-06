@@ -8,7 +8,6 @@ Item {
     id: page
 
     property Theme theme
-    property MockBackend store
 
     signal back()
 
@@ -23,7 +22,7 @@ Item {
             Layout.topMargin: page.theme.gapSmall
             theme: page.theme
             title: "记一笔"
-            subtitle: page.store.dateText
+            subtitle: Fmt.dateText
             showBack: true
             onBack: page.back()
         }
@@ -89,7 +88,7 @@ Item {
                                 role: "display"
                                 font.pixelSize: page.theme.px(56)
                                 color: page.theme.primaryInk
-                                text: page.store.waterCups
+                                text: RecordVM.waterCups
                                 wrapMode: Text.NoWrap
                             }
 
@@ -97,7 +96,7 @@ Item {
                                 theme: page.theme
                                 role: "heading"
                                 color: page.theme.inkSoft
-                                text: "/ " + page.store.waterGoal + " 杯"
+                                text: "/ " + RecordVM.waterGoal + " 杯"
                             }
 
                             Item { Layout.fillWidth: true }
@@ -108,17 +107,17 @@ Item {
                             spacing: page.theme.px(6)
 
                             Repeater {
-                                model: page.store.waterGoal
+                                model: RecordVM.waterGoal
 
                                 delegate: Rectangle {
                                     required property int index
 
-                                    width: Math.floor((waterColumn.width - page.theme.px(6) * (page.store.waterGoal - 1)) / page.store.waterGoal)
+                                    width: Math.floor((waterColumn.width - page.theme.px(6) * (RecordVM.waterGoal - 1)) / RecordVM.waterGoal)
                                     height: page.theme.px(34)
                                     radius: page.theme.px(6)
-                                    color: index < page.store.waterCups ? page.theme.primary : page.theme.surfaceAlt
+                                    color: index < RecordVM.waterCups ? page.theme.primary : page.theme.surfaceAlt
                                     border.width: 2
-                                    border.color: index < page.store.waterCups ? page.theme.primary : page.theme.line
+                                    border.color: index < RecordVM.waterCups ? page.theme.primary : page.theme.line
                                 }
                             }
                         }
@@ -127,10 +126,15 @@ Item {
                             width: parent.width
                             height: page.theme.buttonLarge
                             theme: page.theme
-                            text: page.store.waterCups >= page.store.waterGoal ? "今天已经喝够啦" : "＋ 我喝了一杯水"
+                            text: RecordVM.waterCups >= RecordVM.waterGoal ? "今天已经喝够啦" : "＋ 我喝了一杯水"
                             kind: "primary"
-                            enabled: page.store.waterCups < page.store.waterGoal
-                            onClicked: page.store.addWater()
+                            enabled: RecordVM.waterCups < RecordVM.waterGoal
+                            onClicked: {
+                                var id = RecordVM.addWater()
+                                if (id > 0)
+                                    Undo.show("已记下：第 " + RecordVM.waterCups + " 杯水",
+                                              function () { RecordVM.removeRecord(id) })
+                            }
                         }
                     }
                 }
@@ -165,7 +169,7 @@ Item {
                                 role: "display"
                                 font.pixelSize: page.theme.scaleLevel === 2 ? page.theme.px(32) : page.theme.px(46)
                                 color: page.theme.primaryInk
-                                text: page.store.sleepDurationText()
+                                text: Fmt.durationText(RecordVM.sleepMinutes)
                                 wrapMode: Text.NoWrap
                             }
 
@@ -181,7 +185,7 @@ Item {
                                 theme: page.theme
                                 role: "body"
                                 color: page.theme.inkSoft
-                                text: "入睡 " + (page.store.sleepStart ? page.store.sleepStart : "未记录")
+                                text: "入睡 " + (RecordVM.sleepStart ? RecordVM.sleepStart : "未记录")
                             }
 
                             AppText {
@@ -189,7 +193,7 @@ Item {
                                 theme: page.theme
                                 role: "body"
                                 color: page.theme.inkSoft
-                                text: "起床 " + (page.store.sleepEnd ? page.store.sleepEnd : "未记录")
+                                text: "起床 " + (RecordVM.sleepEnd ? RecordVM.sleepEnd : "未记录")
                             }
                         }
 
@@ -203,7 +207,10 @@ Item {
                                 theme: page.theme
                                 text: "我睡了"
                                 kind: "secondary"
-                                onClicked: page.store.markSleepStart()
+                                onClicked: {
+                                    var id = RecordVM.markSleepStart()
+                                    Undo.show("已记下入睡时间", function () { RecordVM.removeRecord(id) })
+                                }
                             }
 
                             AppButton {
@@ -212,7 +219,10 @@ Item {
                                 theme: page.theme
                                 text: "起床"
                                 kind: "primary"
-                                onClicked: page.store.markSleepEnd()
+                                onClicked: {
+                                    var id = RecordVM.markSleepEnd()
+                                    Undo.show("已记下起床时间", function () { RecordVM.removeRecord(id) })
+                                }
                             }
                         }
 
@@ -257,7 +267,7 @@ Item {
                                 theme: page.theme
                                 role: "heading"
                                 color: page.theme.primary
-                                text: page.store.activityMinutes + " 分钟"
+                                text: RecordVM.activityMinutes + " 分钟"
                             }
                         }
 
@@ -280,7 +290,10 @@ Item {
                                 text: "散步"
                                 subtitle: "15 分钟"
                                 kind: "secondary"
-                                onClicked: page.store.addActivity("散步")
+                                onClicked: {
+                                    var id = RecordVM.addActivity("散步")
+                                    Undo.show("已记下散步", function () { RecordVM.removeRecord(id) })
+                                }
                             }
 
                             AppButton {
@@ -290,7 +303,10 @@ Item {
                                 text: "家务"
                                 subtitle: "10 分钟"
                                 kind: "secondary"
-                                onClicked: page.store.addActivity("家务")
+                                onClicked: {
+                                    var id = RecordVM.addActivity("家务")
+                                    Undo.show("已记下家务", function () { RecordVM.removeRecord(id) })
+                                }
                             }
 
                             AppButton {
@@ -300,7 +316,10 @@ Item {
                                 text: "其他"
                                 subtitle: "20 分钟"
                                 kind: "secondary"
-                                onClicked: page.store.addActivity("其他")
+                                onClicked: {
+                                    var id = RecordVM.addActivity("其他")
+                                    Undo.show("已记下其他", function () { RecordVM.removeRecord(id) })
+                                }
                             }
                         }
                     }

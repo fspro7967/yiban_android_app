@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "state_conflict",
+    "message": "该提醒已在家人端确认",
+    "occurrence_id": 312000001234567800,
+    "server_state": "confirmed",
+    "server_seq": 48
+  }
+}

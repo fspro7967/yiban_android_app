@@ -8,15 +8,14 @@ Item {
     id: page
 
     property Theme theme
-    property MockBackend store
 
     signal back()
     signal sosRequested()
 
     function callCaregiver() {
-        var number = page.store.caregiverPhone.replace(/\s/g, "")
+        var number = ProfileVM.caregiverPhone.replace(/\s/g, "")
         if (!Qt.openUrlExternally("tel:" + number))
-            page.store.toast("演示版没有接入拨号，号码：" + page.store.caregiverPhone)
+            Notify.info("演示版没有接入拨号，号码：" + ProfileVM.caregiverPhone)
     }
 
     ColumnLayout {
@@ -163,9 +162,9 @@ Item {
                             theme: page.theme
                             title: "语音播报"
                             subtitle: "到点会读"
-                            checked: page.store.voiceEnabled
+                            checked: DeviceVM.voiceEnabled
                             onToggled: function (value) {
-                                page.store.voiceEnabled = value
+                                DeviceVM.voiceEnabled = value
                             }
                         }
 
@@ -180,9 +179,9 @@ Item {
                             theme: page.theme
                             title: "夜间安静"
                             subtitle: "22:00–07:00"
-                            checked: page.store.nightQuiet
+                            checked: DeviceVM.nightQuiet
                             onToggled: function (value) {
-                                page.store.nightQuiet = value
+                                DeviceVM.nightQuiet = value
                             }
                         }
                     }
@@ -215,7 +214,7 @@ Item {
                             width: parent.width
                             theme: page.theme
                             role: "heading"
-                            text: page.store.caregiverName
+                            text: ProfileVM.caregiverName
                         }
 
                         AppText {
@@ -223,7 +222,7 @@ Item {
                             theme: page.theme
                             role: "body"
                             color: page.theme.inkSoft
-                            text: "紧急联系人 · " + page.store.caregiverPhone
+                            text: "紧急联系人 · " + ProfileVM.caregiverPhone
                         }
 
                         AppButton {
@@ -286,7 +285,7 @@ Item {
                             theme: page.theme
                             text: "重新配对"
                             kind: "secondary"
-                            onClicked: page.store.toast("演示版：配对接口尚未接入")
+                            onClicked: Notify.info("演示版：配对接口尚未接入")
                         }
                     }
                 }
@@ -320,7 +319,7 @@ Item {
                             theme: page.theme
                             text: "预览到点提醒"
                             kind: "secondary"
-                            onClicked: page.store.triggerDemoReminder()
+                            onClicked: ReminderVM.triggerDemoReminder()
                         }
 
                         AppButton {
@@ -360,7 +359,7 @@ Item {
         id: callDialog
         theme: page.theme
         title: "给家人打电话"
-        message: "要拨打 " + page.store.caregiverName + " 的电话吗？\n" + page.store.caregiverPhone
+        message: "要拨打 " + ProfileVM.caregiverName + " 的电话吗？\n" + ProfileVM.caregiverPhone
         confirmText: "拨打"
         cancelText: "取消"
         onAccepted: page.callCaregiver()
@@ -374,6 +373,6 @@ Item {
         confirmText: "恢复"
         cancelText: "取消"
         danger: true
-        onAccepted: page.store.resetDemo()
+        onAccepted: DeviceVM.resetDemo()
     }
 }

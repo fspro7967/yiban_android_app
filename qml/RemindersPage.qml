@@ -8,24 +8,23 @@ Item {
     id: page
 
     property Theme theme
-    property MockBackend store
 
     signal back()
     signal addRequested()
 
-    function confirmItem(id) {
-        page.store.confirmOccurrence(id)
+    function confirmItem(occurrenceId) {
+        ReminderVM.confirm(occurrenceId)
     }
 
-    function snoozeItem(id) {
-        if (!page.store.snoozeOccurrence(id, 10))
-            page.store.toast("已推迟 3 次，请先完成")
+    function snoozeItem(occurrenceId) {
+        ReminderVM.snooze(occurrenceId)
     }
 
-    function reopenItem(id) {
-        page.store.setState(id, "notified")
-        page.store.beginUndo("已恢复为待确认", function () {
-            page.store.setState(id, "confirmed")
+    // 撤销 = 回到"已提醒未确认"；撤销条里再点一次就重新确认。
+    function reopenItem(occurrenceId) {
+        ReminderVM.undo(occurrenceId)
+        Undo.show("已恢复为待确认", function () {
+            ReminderVM.confirm(occurrenceId)
         })
     }
 
@@ -40,7 +39,7 @@ Item {
             Layout.topMargin: page.theme.gapSmall
             theme: page.theme
             title: "提醒"
-            subtitle: page.store.todayDone + " / " + page.store.todayTotal
+            subtitle: ReminderVM.todayDone + " / " + ReminderVM.todayTotal
             showBack: true
             actionText: "新建"
             onBack: page.back()
@@ -102,7 +101,7 @@ Item {
                 }
 
                 Repeater {
-                    model: page.store.sortedReminders
+                    model: ReminderVM.today
 
                     delegate: Rectangle {
                         id: card
@@ -140,7 +139,7 @@ Item {
                                     role: "heading"
                                     font.pixelSize: page.theme.px(34)
                                     color: page.theme.ink
-                                    text: card.modelData.time
+                                    text: Fmt.hhmm(card.modelData.dueTs)
                                 }
 
                                 StateChip {
@@ -230,7 +229,7 @@ Item {
 
                             AppText {
                                 width: parent.width
-                                visible: card.actionable && card.modelData.snoozeUsed >= 3
+                                visible: card.actionable && card.modelData.snoozeCount >= 3
                                 theme: page.theme
                                 role: "label"
                                 color: page.theme.danger
@@ -248,7 +247,7 @@ Item {
                     color: page.theme.surface
                     border.width: 2
                     border.color: page.theme.line
-                    visible: page.store.sortedReminders.length === 0
+                    visible: ReminderVM.today.length === 0
 
                     Column {
                         id: emptyColumn
@@ -298,7 +297,7 @@ Item {
 
         onAccepted: {
             if (target) {
-                page.store.removeReminder(target.id)
+                PlanVM.deletePlan(target.planId)
                 target = null
             }
         }

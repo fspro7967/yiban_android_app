@@ -16,10 +16,8 @@ ApplicationWindow {
     color: window.theme.bg
 
     Theme { id: appTheme }
-    MockBackend { id: appStore }
 
     readonly property Theme theme: appTheme
-    readonly property MockBackend store: appStore
 
     readonly property int safeTop: SafeArea.margins.top
     readonly property int safeBottom: SafeArea.margins.bottom
@@ -119,7 +117,6 @@ ApplicationWindow {
         id: homeComponent
         HomePage {
             theme: window.theme
-            store: window.store
             onOpenPage: function (pageName) {
                 window.navigate(pageName)
             }
@@ -131,7 +128,6 @@ ApplicationWindow {
         id: remindersComponent
         RemindersPage {
             theme: window.theme
-            store: window.store
             onBack: window.goBack()
             onAddRequested: window.navigate("add")
         }
@@ -141,7 +137,6 @@ ApplicationWindow {
         id: addComponent
         AddReminderPage {
             theme: window.theme
-            store: window.store
             onBack: window.goBack()
             onSaved: window.goBack()
         }
@@ -151,7 +146,6 @@ ApplicationWindow {
         id: recordComponent
         RecordPage {
             theme: window.theme
-            store: window.store
             onBack: window.goBack()
         }
     }
@@ -160,7 +154,6 @@ ApplicationWindow {
         id: statsComponent
         StatsPage {
             theme: window.theme
-            store: window.store
             onBack: window.goBack()
         }
     }
@@ -169,7 +162,6 @@ ApplicationWindow {
         id: settingsComponent
         SettingsPage {
             theme: window.theme
-            store: window.store
             onBack: window.goBack()
             onSosRequested: window.startSos()
         }
@@ -178,17 +170,17 @@ ApplicationWindow {
     // 全屏到点提醒（必须做出选择，返回键不关闭）
     ReminderScreen {
         id: reminderScreen
+        objectName: "reminderScreen"
         anchors.fill: parent
         theme: window.theme
-        store: window.store
     }
 
     // 紧急呼救 5 秒确认
     CallScreen {
         id: callScreen
+        objectName: "callScreen"
         anchors.fill: parent
         theme: window.theme
-        store: window.store
     }
 
     // 底部撤销条：5 秒内可撤销确认/记录
@@ -201,10 +193,10 @@ ApplicationWindow {
         anchors.rightMargin: window.theme.pageMargin
         anchors.bottomMargin: window.safeBottom + window.theme.gap
         theme: window.theme
-        active: window.store.undoVisible
-        message: window.store.undoText
-        secondsLeft: window.store.undoSecondsLeft
-        onUndo: window.store.undo()
+        active: Undo.visible
+        message: Undo.text
+        secondsLeft: Undo.secondsLeft
+        onUndo: Undo.undo()
     }
 
     Toast {
@@ -215,18 +207,52 @@ ApplicationWindow {
         theme: window.theme
     }
 
+    // VM 只发结构化结果：toast 是给用户看的一句话，commandRejected 带稳定错误码。
     Connections {
-        target: window.store
+        target: ReminderVM
 
-        function onToast(text) {
-            toast.show(text)
-        }
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
 
         function onReminderDue(occurrence) {
             if (reminderScreen.active || callScreen.active)
                 return
             reminderScreen.open(occurrence)
         }
+    }
+
+    Connections {
+        target: PlanVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: RecordVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: DeviceVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: SyncVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: Notify
+
+        function onInfo(text) { toast.show(text) }
     }
 
     Component.onCompleted: root.forceActiveFocus()

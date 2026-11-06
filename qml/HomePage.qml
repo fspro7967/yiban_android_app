@@ -8,12 +8,11 @@ Item {
     id: page
 
     property Theme theme
-    property MockBackend store
 
     signal openPage(string page)
     signal sosActivated()
 
-    readonly property var next: page.store.nextReminder
+    readonly property var next: ReminderVM.current
 
     ColumnLayout {
         anchors.fill: parent
@@ -30,7 +29,7 @@ Item {
                 Layout.fillWidth: true
                 theme: page.theme
                 role: "title"
-                text: page.store.greeting + "，" + page.store.elderName
+                text: Fmt.greeting + "，" + ProfileVM.elderName
                 wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
@@ -40,7 +39,7 @@ Item {
                 theme: page.theme
                 role: "label"
                 color: page.theme.inkSoft
-                text: page.store.dateText + "  " + page.store.clockText
+                text: Fmt.dateText + "  " + Fmt.clockText
             }
         }
 
@@ -176,7 +175,7 @@ Item {
                                 theme: page.theme
                                 role: "heading"
                                 color: page.theme.primary
-                                text: page.store.todayDone + " / " + page.store.todayTotal
+                                text: ReminderVM.todayDone + " / " + ReminderVM.todayTotal
                             }
                         }
 
@@ -187,7 +186,7 @@ Item {
                             color: page.theme.surfaceAlt
 
                             Rectangle {
-                                width: parent.width * Math.max(0, Math.min(1, page.store.todayDone / Math.max(1, page.store.todayTotal)))
+                                width: parent.width * Math.max(0, Math.min(1, ReminderVM.todayDone / Math.max(1, ReminderVM.todayTotal)))
                                 height: parent.height
                                 radius: height / 2
                                 color: page.theme.primary
@@ -212,7 +211,7 @@ Item {
                         theme: page.theme
                         glyph: "提"
                         title: "提醒"
-                        subtitle: page.store.pendingCount + " 条待办"
+                        subtitle: ReminderVM.pendingCount + " 条待办"
                         tint: page.theme.tileAmber
                         badgeColor: page.theme.amberInk
                         onClicked: page.openPage("reminders")
@@ -236,7 +235,7 @@ Item {
                         theme: page.theme
                         glyph: "统"
                         title: "统计"
-                        subtitle: "完成率 " + page.store.averageRate(page.store.stats7) + "%"
+                        subtitle: "完成率 " + Fmt.averageRate(RecordVM.stats7) + "%"
                         tint: page.theme.tileBlue
                         badgeColor: "#244A7A"
                         onClicked: page.openPage("stats")
