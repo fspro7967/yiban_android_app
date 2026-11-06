@@ -108,8 +108,14 @@ Item {
                         id: card
                         required property var modelData
 
-                        readonly property bool actionable: modelData.state === "pending" || modelData.state === "snoozed"
+                        // notified 也要可操作：确认后撤销会回到 notified，若不算 actionable，两个按钮都会变灰。
+                        readonly property bool actionable: modelData.state === "pending"
+                            || modelData.state === "notified"
+                            || modelData.state === "snoozed"
                         readonly property bool isDone: modelData.state === "confirmed"
+                        readonly property bool isMissed: modelData.state === "missed"
+                        readonly property bool isEscalated: modelData.state === "escalated"
+                        readonly property bool canComplete: !isDone && !isMissed
 
                         width: list.width
                         height: cardColumn.implicitHeight + page.theme.gap * 1.5
@@ -196,9 +202,9 @@ Item {
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: page.theme.button
                                     theme: page.theme
-                                    text: card.isDone ? "已完成" : "✓ 完成"
+                                    text: card.isDone ? "已完成" : card.isMissed ? "已错过" : "✓ 完成"
                                     kind: "primary"
-                                    enabled: card.actionable
+                                    enabled: card.canComplete
                                     onClicked: page.confirmItem(card.modelData.id)
                                 }
 
@@ -206,14 +212,17 @@ Item {
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: page.theme.button
                                     theme: page.theme
-                                    text: card.isDone ? "撤销" : "推迟"
-                                    subtitle: card.isDone ? "" : "10 分钟"
+                                    text: card.isDone ? "撤销"
+                                        : card.isEscalated ? "已通知家人"
+                                        : card.isMissed ? "已错过"
+                                        : "推迟"
+                                    subtitle: card.isDone || card.isEscalated || card.isMissed ? "" : "10 分钟"
                                     kind: card.isDone ? "ghost" : "secondary"
                                     enabled: card.isDone || card.actionable
                                     onClicked: {
                                         if (card.isDone)
                                             page.reopenItem(card.modelData.id)
-                                        else
+                                        else if (card.actionable)
                                             page.snoozeItem(card.modelData.id)
                                     }
                                 }

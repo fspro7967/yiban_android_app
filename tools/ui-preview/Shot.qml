@@ -105,6 +105,8 @@ Window {
             return
         }
         pageObj.anchors.fill = host
+        if (root.argValue("--action=") === "undo" && pageObj.reopenItem)
+            pageObj.reopenItem("r1")
         if (pageName === "reminder")
             pageObj.open(store.reminders[2])
         else if (pageName === "call")

@@ -29,6 +29,7 @@
 - [设置](screenshots/06-settings.png)
 - [全屏到点提醒](screenshots/07-reminder-fullscreen.png)
 - [紧急呼救](screenshots/08-sos-call.png)
+- [确认后撤销：回到“待确认”，完成/推迟按钮仍可用](screenshots/09-undo-state.png)
 
 ## 运行
 
@@ -194,4 +195,4 @@ screenshots/                设计验收截图
 - `qmllint qml/*.qml`：无输出。
 - 桌面 `build-desktop` 编译通过，离屏启动无 QML 运行时错误。
 - Android `build` 的 `apk` 目标构建通过，产物 `build/android-build/yiban_android_app.apk`。
-- 8 张页面截图由 `tools/ui-preview/Shot.qml` 离屏渲染，412×915。
+- 9 张页面截图由 `tools/ui-preview/Shot.qml` 离屏渲染，412×915；其中 `09-undo-state.png` 是“确认后撤销”回归截图。
