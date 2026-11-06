@@ -187,7 +187,7 @@ src/vm/
 src/comm/
   http_client.*         唯一 HTTP 落点（当前只有离线实现，B2 补真实客户端）
 tests/
-  tst_app_core.cpp      facade 契约单测（13 例）
+  tst_app_core.cpp      facade 契约单测（14 例）
 docs/
   端上接口规范_v1.1.md   ★ 冻结的接口/形状/状态机/错误码
   后端交接清单.md       给 B1/B2 的逐文件落点与顺序
@@ -240,7 +240,7 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
 ## 验证
 
 - `qmllint -s qml/*.qml`：无语法错误（facade 单例的误报见“运行”一节说明）。
-- `tests/tst_app_core`：13 例全绿（状态机、ID 编码、错误码、事件去重）；
+- `tests/tst_app_core`：14 例全绿（状态机、ID 编码、错误码、事件去重）；
   `CTest` 集成，`BUILD_TESTING=ON`（默认）即可跑。
 - 桌面 `build-desktop` 编译通过，离屏启动无 QML 运行时错误。
 - Android `build` 的 `apk` 目标构建通过，产物 `build/android-build/yiban_android_app.apk`。

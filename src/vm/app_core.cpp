@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QTime>
+#include <QHash>
 #include <QUuid>
 #include <QtMath>
 
@@ -274,6 +275,12 @@ void AppCore::onTick()
 
 void AppCore::rebuildToday()
 {
+    // 保留同 id occurrence 的既有状态：新建/删除计划只重排清单，不重置今天的进度。
+    QHash<qint64, QVariantMap> previous;
+    for (const QVariant &entry : std::as_const(m_occurrences))
+        previous.insert(entry.toMap().value(QStringLiteral("occurrenceId")).toLongLong(),
+                        entry.toMap());
+
     m_occurrences.clear();
     for (const QVariant &entry : std::as_const(m_plans)) {
         const QVariantMap plan = entry.toMap();
@@ -301,6 +308,11 @@ void AppCore::rebuildToday()
             occ[QStringLiteral("windowMin")] = plan.value(QStringLiteral("windowMin"));
             occ[QStringLiteral("escalateAfterMin")] =
                 plan.value(QStringLiteral("escalateAfterMin"));
+            if (const auto it = previous.constFind(occurrenceId); it != previous.constEnd()) {
+                occ[QStringLiteral("state")] = it->value(QStringLiteral("state"));
+                occ[QStringLiteral("snoozeCount")] = it->value(QStringLiteral("snoozeCount"));
+                occ[QStringLiteral("snoozeUntilTs")] = it->value(QStringLiteral("snoozeUntilTs"));
+            }
             m_occurrences.append(occ);
         }
     }

@@ -48,6 +48,7 @@ private slots:
     void statsShape();
     void repeatedConfirmLogsSingleEvent();
     void unknownOccurrenceIsRejected();
+    void addingPlanKeepsTodaysProgress();
 
 private:
     // 建一条 5~30 分钟之后的 daily 计划，返回 planId；临近午夜返回 0（调用方 QSKIP）。
@@ -325,6 +326,41 @@ void FacadeCoreTest::unknownOccurrenceIsRejected()
     QString error;
     QVERIFY(!AppCore::instance()->confirm(123456789, &error));
     QCOMPARE(error, QStringLiteral("occurrence_not_found"));
+}
+
+void FacadeCoreTest::addingPlanKeepsTodaysProgress()
+{
+    AppCore *core = AppCore::instance();
+
+    QVariantMap target;
+    for (const QVariant &entry : core->occurrencesToday()) {
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("state")).toString() != QStringLiteral("confirmed")) {
+            target = occ;
+            break;
+        }
+    }
+    if (target.isEmpty())
+        QSKIP("今天已经全部确认，没有可改动的项");
+
+    const qint64 id = target.value(QStringLiteral("occurrenceId")).toLongLong();
+    const qint64 planId = target.value(QStringLiteral("planId")).toLongLong();
+    QVERIFY(core->confirm(id));
+    const int doneAfterConfirm = core->todayDone();
+
+    if (createPlanAhead(12) == 0)
+        QSKIP("临近午夜，今天不会产生新 occurrence");
+
+    // 新建计划只重排清单，不能把今天已确认的进度洗掉。
+    for (const QVariant &entry : core->occurrencesToday()) {
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("occurrenceId")).toLongLong() == id) {
+            QCOMPARE(occ.value(QStringLiteral("state")).toString(), QStringLiteral("confirmed"));
+            QCOMPARE(core->todayDone(), doneAfterConfirm);
+            return;
+        }
+    }
+    QFAIL("新建计划后原来的 occurrence 不见了");
 }
 
 QTEST_GUILESS_MAIN(FacadeCoreTest)
