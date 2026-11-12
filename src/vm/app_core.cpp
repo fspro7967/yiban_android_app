@@ -96,7 +96,12 @@ AppCore::AppCore(QObject *parent)
     connect(&m_tick, &QTimer::timeout, this, &AppCore::onTick);
     m_tick.start();
 
+    // 统计里"今天"那一格直接取今天的 occurrence，确认/新增/删除都要让统计重新取值。
+    connect(this, &AppCore::occurrencesChanged, this, &AppCore::statsChanged);
+
     seedDemo();
+    m_demoData = snapshot();
+    clearActive();
 }
 
 AppCore *AppCore::instance()
@@ -115,6 +120,8 @@ void AppCore::seedDemo()
     m_nextRecordId = 1;
     m_nextEventSeq = 1;
     m_autoReminders = true;
+    m_history.clear();
+    m_deletedOccurrences.clear();
 
     m_elderName = QStringLiteral("陈奶奶");
     m_caregiverName = QStringLiteral("女儿 陈晓");
@@ -212,6 +219,92 @@ void AppCore::seedDemo()
     emit profileChanged();
 }
 
+AppCore::DataSnapshot AppCore::snapshot() const
+{
+    DataSnapshot data;
+    data.plans = m_plans;
+    data.occurrences = m_occurrences;
+    data.records = m_records;
+    data.events = m_events;
+    data.nextPlanId = m_nextPlanId;
+    data.nextRecordId = m_nextRecordId;
+    data.nextEventSeq = m_nextEventSeq;
+    data.elderName = m_elderName;
+    data.caregiverName = m_caregiverName;
+    data.caregiverPhone = m_caregiverPhone;
+    data.day = m_day;
+    data.startDate = m_startDate;
+    data.history = m_history;
+    data.deletedOccurrences = m_deletedOccurrences;
+    return data;
+}
+
+void AppCore::clearActive()
+{
+    m_plans.clear();
+    m_occurrences.clear();
+    m_records.clear();
+    m_events.clear();
+    m_nextPlanId = 1;
+    m_nextRecordId = 1;
+    m_nextEventSeq = 1;
+    m_elderName.clear();
+    m_caregiverName.clear();
+    m_caregiverPhone.clear();
+    // 真实数据从第一次进入真实域的这一天开始统计，之前的日期不出现在统计里。
+    m_startDate = QDate::currentDate();
+    m_history.clear();
+    m_deletedOccurrences.clear();
+}
+
+void AppCore::applySnapshot(const DataSnapshot &data)
+{
+    m_plans = data.plans;
+    m_records = data.records;
+    m_events = data.events;
+    m_nextPlanId = data.nextPlanId;
+    m_nextRecordId = data.nextRecordId;
+    m_nextEventSeq = data.nextEventSeq;
+    m_elderName = data.elderName;
+    m_caregiverName = data.caregiverName;
+    m_caregiverPhone = data.caregiverPhone;
+    m_startDate = data.startDate;
+    m_history = data.history;
+    m_deletedOccurrences = data.deletedOccurrences;
+
+    // 离开这个数据域期间跨了天：先把旧那天的进度归档，再按今天重建。
+    if (data.day.isValid() && data.day != m_day) {
+        archiveDay(data.day, data.occurrences);
+        m_deletedOccurrences.clear();
+    }
+
+    // 从目标数据域的 occurrence 重建今天清单，避免两个域 id 相同导致状态串味。
+    m_occurrences.clear();
+    rebuildTodayFrom(data.occurrences);
+
+    emit plansChanged();
+    emit recordsChanged();
+    emit profileChanged();
+}
+
+void AppCore::setDemoMode(bool on)
+{
+    if (m_demoMode == on)
+        return;
+
+    if (m_demoMode)
+        m_demoData = snapshot();
+    else
+        m_realData = snapshot();
+
+    m_demoMode = on;
+    m_day = QDate::currentDate();
+    m_nowMs = QDateTime::currentMSecsSinceEpoch();
+    applySnapshot(on ? m_demoData : m_realData);
+
+    emit demoModeChanged();
+}
+
 void AppCore::setProfile(const QString &elderName, const QString &caregiverName,
                          const QString &caregiverPhone)
 {
@@ -225,6 +318,8 @@ void AppCore::onTick()
 {
     const QDate today = QDate::currentDate();
     if (today != m_day) {
+        archiveDay(m_day, m_occurrences);
+        m_deletedOccurrences.clear();
         m_day = today;
         rebuildToday();
     }
@@ -288,9 +383,41 @@ void AppCore::onTick()
 
 void AppCore::rebuildToday()
 {
+    rebuildTodayFrom(m_occurrences);
+}
+
+QVariantMap AppCore::tally(const QVariantList &occurrences, bool dayClosed)
+{
+    int total = 0;
+    int done = 0;
+    int missed = 0;
+    for (const QVariant &entry : occurrences) {
+        const QString state = entry.toMap().value(QStringLiteral("state")).toString();
+        ++total;
+        if (state == QStringLiteral("confirmed"))
+            ++done;
+        else if (dayClosed || state == QStringLiteral("missed"))
+            ++missed; // 一天结束时还没确认的都算漏做
+    }
+    QVariantMap out;
+    out[QStringLiteral("total")] = total;
+    out[QStringLiteral("done")] = done;
+    out[QStringLiteral("missed")] = missed;
+    return out;
+}
+
+void AppCore::archiveDay(const QDate &day, const QVariantList &occurrences)
+{
+    if (!day.isValid())
+        return;
+    m_history[day.toString(Qt::ISODate)] = tally(occurrences, true);
+}
+
+void AppCore::rebuildTodayFrom(const QVariantList &source)
+{
     // 保留同 id occurrence 的既有状态：新建/删除计划只重排清单，不重置今天的进度。
     QHash<qint64, QVariantMap> previous;
-    for (const QVariant &entry : std::as_const(m_occurrences))
+    for (const QVariant &entry : source)
         previous.insert(entry.toMap().value(QStringLiteral("occurrenceId")).toLongLong(),
                         entry.toMap());
 
@@ -738,11 +865,15 @@ bool AppCore::escalate(qint64 occurrenceId, QString *error)
 void AppCore::sos()
 {
     appendEvent(0, QStringLiteral("escalate"), QStringLiteral("sos"));
-    emit toast(QStringLiteral("已通知 %1").arg(m_caregiverName));
+    emit toast(QStringLiteral("已通知 %1").arg(m_caregiverName.isEmpty() ? QStringLiteral("家人") : m_caregiverName));
 }
 
 void AppCore::triggerDemoReminder()
 {
+    if (!m_demoMode) {
+        emit toast(QStringLiteral("请先在设置里打开演示模式"));
+        return;
+    }
     qint64 target = 0;
     for (const QVariant &entry : std::as_const(m_occurrences)) {
         const QVariantMap occ = entry.toMap();
@@ -884,10 +1015,37 @@ bool AppCore::deletePlan(qint64 planId, QString *error)
     stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
     m_plans[index] = stored;
 
+    // 先留住今天这条计划的 occurrence，撤销删除时连同已确认的进度一起恢复。
+    QVariantList stash;
+    for (const QVariant &entry : std::as_const(m_occurrences)) {
+        if (entry.toMap().value(QStringLiteral("planId")).toLongLong() == planId)
+            stash.append(entry);
+    }
+    m_deletedOccurrences.insert(planId, stash);
+
     m_day = QDate::currentDate();
     rebuildToday();
     emit plansChanged();
-    emit toast(QStringLiteral("已删除这条提醒"));
+    return true;
+}
+
+bool AppCore::restorePlan(qint64 planId, QString *error)
+{
+    const int index = indexOfPlan(planId);
+    if (index < 0 || !m_plans.at(index).toMap().value(QStringLiteral("deleted")).toBool()) {
+        if (error)
+            *error = QStringLiteral("plan_not_found");
+        return false;
+    }
+    QVariantMap stored = m_plans.at(index).toMap();
+    stored[QStringLiteral("deleted")] = false;
+    stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
+    m_plans[index] = stored;
+
+    m_day = QDate::currentDate();
+    rebuildTodayFrom(m_occurrences + m_deletedOccurrences.take(planId));
+    emit plansChanged();
+    emit toast(QStringLiteral("已恢复：%1").arg(stored.value(QStringLiteral("title")).toString()));
     return true;
 }
 
@@ -1017,18 +1175,43 @@ QVariantList AppCore::records() const
 
 QVariantList AppCore::stats(int days) const
 {
+    // 统一口径：每天 {total, done, missed}；"今天"永远取今天实时的 occurrence，
+    // 这样首页进度、首页完成率和统计页三处看到的是同一份数据。
+    // 演示域：今天以前是虚构曲线；真实域：只从开始使用那天算起，没有前期数据。
     static const QList<int> base7 = {50, 50, 100, 100, 100, 100, 100};
     static const QList<int> base30 = {50, 100, 75, 100, 100, 50, 100, 100, 75, 100};
     const QList<int> &base = days == 7 ? base7 : base30;
-    const QDate today = QDate::currentDate();
+    const QDate today = m_day.isValid() ? m_day : QDate::currentDate();
 
+    int first = days - 1;
+    if (!m_demoMode && m_startDate.isValid())
+        first = qBound(0, static_cast<int>(m_startDate.daysTo(today)), days - 1);
+
+    const int shown = first + 1;
     QVariantList out;
-    for (int i = days - 1; i >= 0; --i) {
+    for (int i = first; i >= 0; --i) {
         const QDate day = today.addDays(-i);
-        const int rate = base.at((days - 1 - i) % base.size());
-        const int total = 4;
-        const int done = qRound(rate * total / 100.0);
-        const bool showLabel = days == 7 || i == days - 1 || i == 0 || i % 5 == 0;
+        int total = 0;
+        int done = 0;
+        int missed = 0;
+        if (i == 0) {
+            const QVariantMap t = tally(m_occurrences, false);
+            total = t.value(QStringLiteral("total")).toInt();
+            done = t.value(QStringLiteral("done")).toInt();
+            missed = t.value(QStringLiteral("missed")).toInt();
+        } else if (m_demoMode) {
+            const int fake = base.at((days - 1 - i) % base.size());
+            total = 4;
+            done = qRound(fake * total / 100.0);
+            missed = total - done;
+        } else {
+            const QVariantMap t = m_history.value(day.toString(Qt::ISODate)).toMap();
+            total = t.value(QStringLiteral("total")).toInt();
+            done = t.value(QStringLiteral("done")).toInt();
+            missed = t.value(QStringLiteral("missed")).toInt();
+        }
+        const int rate = total > 0 ? qRound(done * 100.0 / total) : 0;
+        const bool showLabel = shown <= 7 || i == first || i == 0 || i % 5 == 0;
 
         QVariantMap item;
         item[QStringLiteral("date")] = day.toString(Qt::ISODate);
@@ -1040,7 +1223,7 @@ QVariantList AppCore::stats(int days) const
         // v1.1 正式键
         item[QStringLiteral("expected")] = total;
         item[QStringLiteral("confirmed")] = done;
-        item[QStringLiteral("missed")] = total - done;
+        item[QStringLiteral("missed")] = missed;
         // 兼容旧展示代码
         item[QStringLiteral("done")] = done;
         item[QStringLiteral("total")] = total;
@@ -1105,6 +1288,21 @@ void AppCore::setAutoReminders(bool on)
 
 void AppCore::resetDemo()
 {
+    // 只重建演示数据：无论当前在哪个模式，真实数据都不被覆盖。
+    const bool wasDemo = m_demoMode;
+    const DataSnapshot real = wasDemo ? m_realData : snapshot();
+
     seedDemo();
+    m_demoData = snapshot();
+
+    if (!wasDemo) {
+        m_realData = real;
+        m_demoMode = true;
+        applySnapshot(m_demoData);
+        emit demoModeChanged();
+    } else {
+        applySnapshot(m_demoData);
+    }
+
     emit toast(QStringLiteral("演示数据已恢复"));
 }

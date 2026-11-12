@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDate>
+#include <QHash>
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
@@ -45,6 +46,10 @@ public:
     bool autoReminders() const { return m_autoReminders; }
     void setAutoReminders(bool on);
 
+    // 演示模式：真实数据与演示数据各自独立保存，切换只换当前数据域。
+    bool demoMode() const { return m_demoMode; }
+    void setDemoMode(bool on);
+
     // ---- 提醒动作（事件溯源入口）----
     bool confirm(qint64 occurrenceId, QString *error = nullptr);
     bool snooze(qint64 occurrenceId, QString *error = nullptr);
@@ -57,6 +62,8 @@ public:
     qint64 createPlan(const QVariantMap &plan, QString *error = nullptr);
     bool updatePlan(qint64 planId, const QVariantMap &plan, QString *error = nullptr);
     bool deletePlan(qint64 planId, QString *error = nullptr);
+    // 撤销删除：软删除的计划恢复原样，今天已确认/推迟的进度一并恢复。
+    bool restorePlan(qint64 planId, QString *error = nullptr);
 
     // ---- 记录 ----
     qint64 addRecord(const QString &type, double value, const QString &unit);
@@ -83,9 +90,11 @@ signals:
     void currentChanged();
     void plansChanged();
     void recordsChanged();
+    void statsChanged();
     void profileChanged();
     void nowChanged();
     void reminderDue(const QVariantMap &occurrence);
+    void demoModeChanged();
     void toast(const QString &text);
 
 private slots:
@@ -95,8 +104,32 @@ private:
     explicit AppCore(QObject *parent = nullptr);
     Q_DISABLE_COPY(AppCore)
 
+    struct DataSnapshot {
+        QVariantList plans;
+        QVariantList occurrences;
+        QVariantList records;
+        QVariantList events;
+        qint64 nextPlanId = 1;
+        qint64 nextRecordId = 1;
+        qint64 nextEventSeq = 1;
+        QString elderName;
+        QString caregiverName;
+        QString caregiverPhone;
+        QDate day;                                  // occurrences 所属日期
+        QDate startDate;                            // 真实数据域：开始使用的日期
+        QVariantMap history;                        // "yyyy-MM-dd" → {total, done, missed}
+        QHash<qint64, QVariantList> deletedOccurrences; // planId → 删除前今天的 occurrence
+    };
+
     void seedDemo();
+    DataSnapshot snapshot() const;
+    void applySnapshot(const DataSnapshot &data);
+    void clearActive();
     void rebuildToday();
+    void rebuildTodayFrom(const QVariantList &source);
+    // 把某天 occurrence 的完成情况归档进 m_history（跨天或切换数据域时调用）。
+    void archiveDay(const QDate &day, const QVariantList &occurrences);
+    static QVariantMap tally(const QVariantList &occurrences, bool dayClosed);
     QVariantList occurrencesForDay(const QDate &day) const;
     void fireDue(qint64 occurrenceId);
     void appendEvent(qint64 occurrenceId, const QString &action, const QString &reason);
@@ -123,8 +156,15 @@ private:
     qint64 m_nextEventSeq = 1;
 
     bool m_autoReminders = true;
+    bool m_demoMode = false;
+    DataSnapshot m_realData;
+    DataSnapshot m_demoData;
 
     QString m_elderName;
     QString m_caregiverName;
     QString m_caregiverPhone;
+
+    QDate m_startDate;
+    QVariantMap m_history;
+    QHash<qint64, QVariantList> m_deletedOccurrences;
 };

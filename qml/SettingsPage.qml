@@ -14,6 +14,8 @@ Item {
     signal adminRequested()
 
     function callCaregiver() {
+        if (ProfileVM.caregiverPhone.length === 0)
+            return
         var number = ProfileVM.caregiverPhone.replace(/\s/g, "")
         if (!Qt.openUrlExternally("tel:" + number))
             Notify.info("演示版没有接入拨号，号码：" + ProfileVM.caregiverPhone)
@@ -180,11 +182,59 @@ Item {
                             width: parent.width
                             theme: page.theme
                             title: "夜间安静"
-                            subtitle: "22:00–07:00"
+                            subtitle: !DeviceVM.nightQuiet ? "已关闭，夜里也会读出声"
+                                : DeviceVM.nightQuietActive ? "生效中：到点只亮屏不出声"
+                                : "22:00–07:00 自动不出声"
                             checked: DeviceVM.nightQuiet
                             onToggled: function (value) {
                                 DeviceVM.nightQuiet = value
                             }
+                        }
+                    }
+                }
+
+                AppText {
+                    width: list.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "演示模式"
+                }
+
+                Rectangle {
+                    objectName: "demoModeCard"
+                    width: list.width
+                    height: demoModeColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: page.theme.surface
+                    border.width: 2
+                    border.color: DeviceVM.demoMode ? page.theme.primary : page.theme.line
+
+                    Column {
+                        id: demoModeColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(6)
+                        spacing: page.theme.gapSmall
+
+                        ToggleRow {
+                            width: parent.width
+                            theme: page.theme
+                            title: "使用演示数据"
+                            subtitle: DeviceVM.demoMode ? "当前：演示数据" : "当前：真实数据"
+                            checked: DeviceVM.demoMode
+                            onToggled: function (value) {
+                                DeviceVM.demoMode = value
+                            }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: "打开后显示陈奶奶的演示提醒和记录；关闭后回到你自己的数据。两边分开保存，互不影响。"
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }
@@ -216,7 +266,9 @@ Item {
                             width: parent.width
                             theme: page.theme
                             role: "heading"
-                            text: ProfileVM.caregiverName
+                            text: ProfileVM.caregiverName.length > 0
+                                ? ProfileVM.caregiverName
+                                : "还没有紧急联系人"
                         }
 
                         AppText {
@@ -224,7 +276,9 @@ Item {
                             theme: page.theme
                             role: "body"
                             color: page.theme.inkSoft
-                            text: "紧急联系人 · " + ProfileVM.caregiverPhone
+                            text: ProfileVM.caregiverPhone.length > 0
+                                ? ProfileVM.caregiverPhone
+                                : "请到管理后台填写姓名和电话"
                         }
 
                         AppButton {
@@ -233,6 +287,7 @@ Item {
                             theme: page.theme
                             text: "给家人打电话"
                             kind: "secondary"
+                            enabled: ProfileVM.caregiverPhone.length > 0
                             onClicked: callDialog.open()
                         }
                     }
@@ -357,11 +412,13 @@ Item {
                     role: "label"
                     color: page.theme.inkSoft
                     text: "演示工具（答辩时使用）"
+                    visible: DeviceVM.demoMode
                 }
 
                 Rectangle {
                     width: list.width
                     height: demoColumn.implicitHeight + page.theme.gap * 1.5
+                    visible: DeviceVM.demoMode
                     radius: page.theme.radius
                     color: page.theme.surfaceAlt
                     border.width: 2
@@ -430,7 +487,7 @@ Item {
         id: resetDialog
         theme: page.theme
         title: "恢复演示数据"
-        message: "今天的提醒、喝水、睡眠记录都会回到初始状态，方便重新演示。"
+        message: "只把演示提醒和记录恢复到初始状态，不会影响真实数据。"
         confirmText: "恢复"
         cancelText: "取消"
         danger: true

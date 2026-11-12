@@ -25,6 +25,8 @@ public:
     Q_INVOKABLE bool createPlan(const QVariantMap &plan);
     Q_INVOKABLE bool updatePlan(qint64 planId, const QVariantMap &patch);
     Q_INVOKABLE bool deletePlan(qint64 planId);
+    // 撤销删除（5 秒撤销条用）：恢复软删除的计划及今天的进度。
+    Q_INVOKABLE bool restorePlan(qint64 planId);
 
 signals:
     void plansChanged();

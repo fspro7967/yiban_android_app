@@ -68,6 +68,10 @@ ApplicationWindow {
     function startSos() {
         if (callScreen.active)
             return
+        if (ProfileVM.caregiverPhone.length === 0) {
+            Notify.info("还没有紧急联系人，请先到设置里填写")
+            return
+        }
         callScreen.start()
     }
 
@@ -222,27 +226,43 @@ ApplicationWindow {
         theme: window.theme
     }
 
-    // 底部撤销条：5 秒内可撤销确认/记录
-    UndoBar {
-        id: undoBar
+    // 底部撤销条：5 秒内可撤销确认/记录/删除；连续操作时由下往上叠放，每条各自可撤销。
+    Column {
+        id: undoStack
+        objectName: "undoStack"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.leftMargin: window.theme.pageMargin
         anchors.rightMargin: window.theme.pageMargin
         anchors.bottomMargin: window.safeBottom + window.theme.gap
-        theme: window.theme
-        active: Undo.visible
-        message: Undo.text
-        secondsLeft: Undo.secondsLeft
-        onUndo: Undo.undo()
+        spacing: window.theme.gapSmall
+        z: 200
+
+        Repeater {
+            model: Undo.entries
+
+            delegate: UndoBar {
+                required property int uid
+                required property string text
+                required secondsLeft
+                required totalSeconds
+
+                width: undoStack.width
+                height: implicitHeight
+                theme: window.theme
+                active: true
+                message: text
+                onUndo: Undo.undo(uid)
+            }
+        }
     }
 
     Toast {
         id: toast
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.top: parent.top
-        anchors.topMargin: window.safeTop + window.theme.gap
+        anchors.bottom: undoStack.top
+        anchors.bottomMargin: Undo.count > 0 ? window.theme.gapSmall : window.theme.px(108) - window.theme.gap
         theme: window.theme
     }
 
@@ -277,6 +297,8 @@ ApplicationWindow {
     Connections {
         target: DeviceVM
 
+        // 换数据域后，旧域的撤销动作已经没有意义，直接清掉。
+        function onDemoModeChanged() { Undo.clear() }
         function onToast(text) { toast.show(text) }
         function onCommandRejected(code, message) { toast.show(message) }
     }

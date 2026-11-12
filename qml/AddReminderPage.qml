@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Layouts
 
 // 新建提醒：名称、时间、剂量、备注、重复方式；保存前做“名称”和“时间已过”校验。
+// 保存按钮放在表单最底部（随内容滚动），不会被键盘顶到屏幕中间误触；
+// 校验失败时顶部弹出醒目提示，同时把出错的那一项标红并滚到眼前。
 Item {
     id: page
 
@@ -11,6 +13,7 @@ Item {
     property string timeText: "12:00"
     property string repeatKind: "每天"
     property string error: ""
+    property string errorField: "" // "name" / "time"
 
     readonly property int timeMinutes: Fmt.minutesOf(page.timeText)
     readonly property var quickTimes: ["07:00", "08:00", "12:00", "18:00"]
@@ -18,24 +21,50 @@ Item {
     signal back()
     signal saved()
 
+    function clearError(field) {
+        if (field === undefined || page.errorField === field) {
+            page.error = ""
+            page.errorField = ""
+            banner.hide()
+        }
+    }
+
+    function setTime(text) {
+        page.timeText = text
+        page.clearError("time")
+    }
+
     function bump(delta) {
         var m = (page.timeMinutes + delta + 1440) % 1440
-        page.timeText = Fmt.hhmmFromMinutes(m)
-        page.error = ""
+        page.setTime(Fmt.hhmmFromMinutes(m))
+    }
+
+    function scrollTo(item) {
+        var target = item.mapToItem(form, 0, 0).y - page.theme.gapSmall
+        scroll.contentY = Math.max(0, Math.min(target, scroll.contentHeight - scroll.height))
+    }
+
+    function fail(field, message) {
+        page.errorField = field
+        page.error = message
+        banner.show(message)
     }
 
     function save() {
         var name = nameField.text.trim()
         if (name.length === 0) {
-            page.error = "请先填写提醒名称，比如“吃降压药”。"
+            page.fail("name", "还没有填写提醒名称")
+            page.scrollTo(nameField)
             nameField.forceFocus()
             return
         }
         if (page.timeMinutes <= Fmt.nowMinutes) {
-            page.error = "这个时间已经过了，请用 +15 分钟往后调。"
+            page.fail("time", "提醒时间 " + page.timeText + " 已经过了，请往后调")
+            Qt.inputMethod.hide()
+            page.scrollTo(timeCard)
             return
         }
-        page.error = ""
+        page.clearError()
         // rule 的形状是冻结契约（docs/端上接口规范_v1.1.md 第 2 节）：
         // 端上只支持 daily / weekly / monthly / once，见 docs/端上接口规范_v1.1.md §6。
         var rule = { kind: "daily", times: [page.timeText] }
@@ -75,6 +104,78 @@ Item {
             onBack: page.back()
         }
 
+        // 顶部醒目提示：校验失败时出现在标题栏正下方（把表单往下推，不遮挡），几秒后自动收起，点一下也能关掉。
+        Rectangle {
+            id: banner
+            objectName: "formBanner"
+
+            property string message: ""
+            property bool shown: false
+
+            function show(text) {
+                message = text
+                shown = true
+                bannerTimer.restart()
+            }
+
+            function hide() {
+                shown = false
+                bannerTimer.stop()
+            }
+
+            Layout.fillWidth: true
+            Layout.leftMargin: page.theme.pageMargin
+            Layout.rightMargin: page.theme.pageMargin
+            Layout.topMargin: page.theme.px(6)
+            Layout.preferredHeight: bannerRow.implicitHeight + page.theme.gap * 1.2
+            radius: page.theme.radiusSmall
+            color: page.theme.danger
+            border.width: 2
+            border.color: page.theme.dangerInk
+            visible: shown
+
+            Row {
+                id: bannerRow
+                x: page.theme.gap
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - page.theme.gap * 2
+                spacing: page.theme.gapSmall
+
+                AppText {
+                    id: bannerIcon
+                    theme: page.theme
+                    role: "heading"
+                    color: "#FFFFFF"
+                    text: "⚠"
+                }
+
+                AppText {
+                    width: parent.width - bannerIcon.width - page.theme.gapSmall
+                    anchors.verticalCenter: parent.verticalCenter
+                    theme: page.theme
+                    role: "body"
+                    font.weight: Font.DemiBold
+                    color: "#FFFFFF"
+                    text: banner.message
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: banner.hide()
+            }
+
+            Timer {
+                id: bannerTimer
+                interval: 4000
+                onTriggered: banner.shown = false
+            }
+
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: message
+        }
+
         Flickable {
             id: scroll
             Layout.fillWidth: true
@@ -95,19 +196,24 @@ Item {
 
                 Field {
                     id: nameField
+                    objectName: "nameField"
                     width: form.width
                     theme: page.theme
                     label: "提醒名称"
                     placeholder: "例如：吃降压药"
+                    invalid: page.errorField === "name"
+                    errorText: "请先填写提醒名称，比如“吃降压药”。"
+                    onTextChanged: if (text.trim().length > 0) page.clearError("name")
                 }
 
                 Rectangle {
+                    id: timeCard
                     width: form.width
                     height: timeColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
-                    color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    color: page.errorField === "time" ? page.theme.dangerSoft : page.theme.surface
+                    border.width: page.errorField === "time" ? 4 : 2
+                    border.color: page.errorField === "time" ? page.theme.danger : page.theme.line
 
                     Column {
                         id: timeColumn
@@ -131,10 +237,21 @@ Item {
                                 theme: page.theme
                                 role: "display"
                                 font.pixelSize: page.theme.px(58)
-                                color: page.theme.primaryInk
+                                color: page.errorField === "time" ? page.theme.danger : page.theme.primaryInk
                                 text: page.timeText
                                 wrapMode: Text.NoWrap
                             }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            visible: page.errorField === "time"
+                            theme: page.theme
+                            role: "body"
+                            font.weight: Font.DemiBold
+                            color: page.theme.dangerInk
+                            text: "⚠ 这个时间已经过了，请用 +15 分钟往后调，或点下面的常用时间。"
+                            wrapMode: Text.WordWrap
                         }
 
                         RowLayout {
@@ -187,10 +304,7 @@ Item {
                                     text: modelData
                                     kind: "secondary"
                                     selected: page.timeText === modelData
-                                    onClicked: {
-                                        page.timeText = modelData
-                                        page.error = ""
-                                    }
+                                    onClicked: page.setTime(modelData)
                                 }
                             }
                         }
@@ -259,53 +373,31 @@ Item {
                     }
                 }
 
-                Rectangle {
+                // 保存按钮是表单的最后一项：要滚到最底下才看得到，键盘弹出时不会跟着浮上来。
+                Column {
                     width: form.width
-                    height: errorText.implicitHeight + page.theme.gap * 1.5
-                    radius: page.theme.radiusSmall
-                    color: page.theme.dangerSoft
-                    border.width: 2
-                    border.color: page.theme.danger
-                    visible: page.error !== ""
+                    topPadding: page.theme.gapSmall
+                    spacing: page.theme.px(6)
+
+                    AppButton {
+                        objectName: "saveButton"
+                        width: parent.width
+                        height: page.theme.buttonLarge
+                        theme: page.theme
+                        text: "保存提醒"
+                        kind: "primary"
+                        onClicked: page.save()
+                    }
 
                     AppText {
-                        id: errorText
-                        width: parent.width - page.theme.gap * 2
-                        x: page.theme.gap
-                        y: page.theme.px(10)
+                        width: parent.width
                         theme: page.theme
-                        role: "body"
-                        color: page.theme.dangerInk
-                        text: page.error
-                        wrapMode: Text.WordWrap
+                        role: "label"
+                        color: page.theme.inkSoft
+                        horizontalAlignment: Text.AlignHCenter
+                        text: "保存后会加入“今天的提醒”"
                     }
                 }
-            }
-        }
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.leftMargin: page.theme.pageMargin
-            Layout.rightMargin: page.theme.pageMargin
-            Layout.bottomMargin: page.theme.gap
-            spacing: page.theme.px(6)
-
-            AppButton {
-                Layout.fillWidth: true
-                Layout.preferredHeight: page.theme.buttonLarge
-                theme: page.theme
-                text: "保存提醒"
-                kind: "primary"
-                onClicked: page.save()
-            }
-
-            AppText {
-                Layout.fillWidth: true
-                theme: page.theme
-                role: "label"
-                color: page.theme.inkSoft
-                horizontalAlignment: Text.AlignHCenter
-                text: "保存后会加入“今天的提醒”"
             }
         }
     }

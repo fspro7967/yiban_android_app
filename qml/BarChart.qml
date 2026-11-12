@@ -43,6 +43,10 @@ Canvas {
             barW = 1
             gap = 0
         }
+        // 刚开始使用时只有一两天数据：柱子不撑满整行，按 7 天的宽度从左排起。
+        var maxBarW = (w - theme.px(6) * 6) / 7
+        if (barW > maxBarW)
+            barW = maxBarW
 
         // 50% 参考线
         ctx.strokeStyle = "#E8DCC8"

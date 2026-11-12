@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 
-// 大号输入框：标签 + 76dp 高输入区，聚焦时描边加粗。
+// 大号输入框：标签 + 76dp 高输入区，聚焦时描边加粗；invalid 时整框变红并显示原因。
 Item {
     id: field
 
@@ -14,6 +14,9 @@ Item {
     property alias echoMode: input.echoMode
     property int fontSize: theme ? theme.fontBody : 26
     property int maxLength: 40
+    // 校验没通过时置 true：描边变红、标签下出现 errorText；用户一改内容就由页面清掉。
+    property bool invalid: false
+    property string errorText: ""
 
     implicitHeight: column.implicitHeight
 
@@ -29,7 +32,7 @@ Item {
         AppText {
             theme: field.theme
             role: "label"
-            color: field.theme.inkSoft
+            color: field.invalid ? field.theme.dangerInk : field.theme.inkSoft
             text: field.label
         }
 
@@ -37,9 +40,10 @@ Item {
             width: parent.width
             height: field.theme.px(78)
             radius: field.theme.radiusSmall
-            color: field.theme.surface
-            border.width: input.activeFocus ? 3 : 2
-            border.color: input.activeFocus ? field.theme.primary : field.theme.line
+            color: field.invalid ? field.theme.dangerSoft : field.theme.surface
+            border.width: field.invalid ? 4 : input.activeFocus ? 3 : 2
+            border.color: field.invalid ? field.theme.danger
+                : input.activeFocus ? field.theme.primary : field.theme.line
 
             AppText {
                 anchors.left: parent.left
@@ -72,6 +76,17 @@ Item {
                 clip: true
                 selectByMouse: true
             }
+        }
+
+        AppText {
+            width: parent.width
+            visible: field.invalid && field.errorText !== ""
+            theme: field.theme
+            role: "body"
+            font.weight: Font.DemiBold
+            color: field.theme.dangerInk
+            text: "⚠ " + field.errorText
+            wrapMode: Text.WordWrap
         }
     }
 }

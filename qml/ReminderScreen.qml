@@ -10,6 +10,8 @@ Item {
     property Theme theme
     property bool active: false
     property var occ: null
+
+    readonly property string caregiverLabel: ProfileVM.caregiverName.length > 0 ? ProfileVM.caregiverName : "家人"
     property int escalationLeft: 120
     property bool escalated: false
 
@@ -113,7 +115,7 @@ Item {
                     theme: screen.theme
                     role: "label"
                     color: screen.theme.reminderInk
-                    text: "到点提醒"
+                    text: DeviceVM.nightQuietActive ? "到点提醒 · 夜间静音" : "到点提醒"
                 }
             }
 
@@ -127,7 +129,7 @@ Item {
                 kind: "outlineLight"
                 onClicked: {
                     if (screen.occ)
-                        DeviceVM.speak("提醒您：" + screen.occ.title + "。" + (screen.occ.dose || ""), "reminder")
+                        DeviceVM.speak("提醒您：" + screen.occ.title + "。" + (screen.occ.dose || ""), "manual-reminder")
                 }
             }
         }
@@ -205,8 +207,8 @@ Item {
                     role: "body"
                     color: screen.theme.reminderInk
                     text: screen.escalated
-                        ? "已通知 " + ProfileVM.caregiverName + "，请尽快确认"
-                        : Fmt.countdownText(Math.ceil(screen.escalationLeft / 60)) + "通知 " + ProfileVM.caregiverName
+                        ? "已通知 " + screen.caregiverLabel + "，请尽快确认"
+                        : Fmt.countdownText(Math.ceil(screen.escalationLeft / 60)) + "通知 " + screen.caregiverLabel
                     wrapMode: Text.WordWrap
                 }
 

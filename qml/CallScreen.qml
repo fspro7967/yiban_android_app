@@ -12,6 +12,8 @@ Item {
     property int secondsLeft: 5
     property bool sent: false
 
+    readonly property string caregiverLabel: ProfileVM.caregiverName.length > 0 ? ProfileVM.caregiverName : "家人"
+
     anchors.fill: parent
     visible: active
     z: 60
@@ -51,7 +53,7 @@ Item {
                 screen.sent = true
                 screen.countdown.stop()
                 DeviceVM.sos(1)
-                Notify.info("已通知 " + ProfileVM.caregiverName)
+                Notify.info("已通知 " + screen.caregiverLabel)
             }
         }
     }
@@ -106,7 +108,7 @@ Item {
             color: "#FFFFFF"
             horizontalAlignment: Text.AlignHCenter
             text: screen.sent
-                ? "已通知 " + ProfileVM.caregiverName
+                ? "已通知 " + screen.caregiverLabel
                 : screen.secondsLeft + " 秒后通知家人"
         }
 
@@ -117,7 +119,9 @@ Item {
             color: "#FFE3C4"
             horizontalAlignment: Text.AlignHCenter
             text: screen.sent
-                ? "电话 " + ProfileVM.caregiverPhone + "，请保持手机畅通"
+                ? (ProfileVM.caregiverPhone.length > 0
+                    ? "电话 " + ProfileVM.caregiverPhone + "，请保持手机畅通"
+                    : "还没有设置紧急联系人，请先到设置里填写")
                 : "如果按错了，现在取消还来得及"
             wrapMode: Text.WordWrap
         }

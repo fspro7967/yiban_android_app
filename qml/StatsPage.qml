@@ -25,7 +25,10 @@ Item {
             Layout.topMargin: page.theme.gapSmall
             theme: page.theme
             title: "统计"
-            subtitle: page.rangeDays === 7 ? "最近 7 天" : "最近 30 天"
+            // 真实数据只从开始使用那天算起，不足一个区间时如实写出天数。
+            subtitle: page.chartData.length < page.rangeDays
+                ? "已使用 " + page.chartData.length + " 天"
+                : (page.rangeDays === 7 ? "最近 7 天" : "最近 30 天")
             showBack: true
             onBack: page.back()
         }
@@ -70,6 +73,28 @@ Item {
                         kind: "secondary"
                         selected: page.rangeDays === 30
                         onClicked: page.rangeDays = 30
+                    }
+                }
+
+                Rectangle {
+                    width: list.width
+                    height: emptyStats.implicitHeight + page.theme.gap * 2
+                    radius: page.theme.radius
+                    color: page.theme.surfaceAlt
+                    border.width: 2
+                    border.color: page.theme.line
+                    visible: Fmt.sumTotal(page.chartData) === 0
+
+                    AppText {
+                        id: emptyStats
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.gap
+                        theme: page.theme
+                        role: "body"
+                        color: page.theme.inkSoft
+                        text: "还没有统计数据。先到「提醒」里添加一条，完成一次后会在这里显示。"
+                        wrapMode: Text.WordWrap
                     }
                 }
 
@@ -259,7 +284,7 @@ Item {
                             theme: page.theme
                             text: "听语音播报"
                             kind: "secondary"
-                            onClicked: DeviceVM.speak(Fmt.statsSummary(page.chartData), "stats")
+                            onClicked: DeviceVM.speak(Fmt.statsSummary(page.chartData), "manual-stats")
                         }
                     }
                 }

@@ -38,6 +38,13 @@ int main(int argc, char *argv[])
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         const int delay = qEnvironmentVariableIntValue("YIBAN_SHOT_DELAY");
         if (window) {
+            if (qEnvironmentVariableIsSet("YIBAN_DEMO")) {
+                if (auto *device = engine.singletonInstance<QObject *>(
+                        QStringLiteral("SmartGlasses"), QStringLiteral("DeviceVM"))) {
+                    device->setProperty("demoMode",
+                                        qEnvironmentVariable("YIBAN_DEMO") == QStringLiteral("1"));
+                }
+            }
             if (auto *vm = engine.singletonInstance<QObject *>(
                     QStringLiteral("SmartGlasses"), QStringLiteral("ReminderVM"))) {
                 if (qEnvironmentVariableIsSet("YIBAN_ALL_DONE")) {
@@ -63,6 +70,17 @@ int main(int argc, char *argv[])
                     if (auto *input = gate->findChild<QObject *>(QStringLiteral("phraseInput")))
                         input->setProperty("text", QStringLiteral("我是看护人"));
                     QMetaObject::invokeMethod(gate, "checkPhrase");
+                });
+            }
+            if (qEnvironmentVariableIsSet("YIBAN_SCROLL_DEMO")) {
+                // 仅截图回归：把设置页滚到演示模式卡。
+                QTimer::singleShot(700, window, [window] {
+                    auto *scroll = window->findChild<QObject *>(QStringLiteral("settingsScroll"));
+                    auto *card = window->findChild<QObject *>(QStringLiteral("demoModeCard"));
+                    if (scroll && card) {
+                        scroll->setProperty("contentY", qMax<qreal>(
+                            0, card->property("y").toReal() - 120));
+                    }
                 });
             }
             if (qEnvironmentVariableIsSet("YIBAN_SCROLL_END")) {

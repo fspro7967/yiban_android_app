@@ -18,6 +18,8 @@ Item {
     readonly property bool hasFuture: futureNext && futureNext.occurrenceId !== undefined
     readonly property var next: hasToday ? todayNext : futureNext
     readonly property bool hasNext: hasToday || hasFuture
+    readonly property int planCount: PlanVM.plans.length
+    readonly property bool hasPlans: planCount > 0
 
     ColumnLayout {
         anchors.fill: parent
@@ -34,7 +36,9 @@ Item {
                 Layout.fillWidth: true
                 theme: page.theme
                 role: "title"
-                text: Fmt.greeting + "，" + ProfileVM.elderName
+                text: ProfileVM.elderName.length > 0
+                    ? Fmt.greeting + "，" + ProfileVM.elderName
+                    : "你好"
                 wrapMode: Text.NoWrap
                 elide: Text.ElideRight
             }
@@ -93,7 +97,8 @@ Item {
                                 theme: page.theme
                                 role: "label"
                                 color: page.hasNext && page.next.dueNow ? page.theme.amberInk : page.theme.inkSoft
-                                text: !page.hasNext ? "今天"
+                                text: !page.hasNext
+                                    ? (page.hasPlans ? "今天" : "开始使用")
                                     : page.hasToday ? (page.next.state === "snoozed" ? "已推迟到" : "下一条提醒")
                                     : (page.next.dayLabel || "下一条提醒")
                             }
@@ -109,21 +114,19 @@ Item {
                                     : page.theme.inkSoft
                                 text: {
                                     if (!page.hasNext)
-                                        return "全部完成"
+                                        return page.hasPlans ? "全部完成" : "0 条提醒"
                                     if (page.next.dueNow)
                                         return "现在"
-                                    var m = page.next.diffMinutes
+                                    // 一律用目标时间戳和实时 nowMs 现算：current 里的 diffMinutes
+                                    // 只在状态变化时刷新，时间走了它不会跟着变。
+                                    var target = page.next.dueTs
                                     if (page.hasToday && page.next.state === "snoozed"
-                                            && page.next.snoozeUntilTs > ReminderVM.nowMs) {
-                                        m = Math.ceil((page.next.snoozeUntilTs - ReminderVM.nowMs) / 60000)
-                                    } else if (!page.hasToday) {
-                                        m = Math.ceil((page.next.dueTs - ReminderVM.nowMs) / 60000)
-                                    }
-                                    m = Math.max(0, m)
-                                    if (m < 60)
-                                        return m + " 分钟后"
-                                    var h = Math.floor(m / 60)
-                                    return "还有 " + h + " 小时"
+                                            && page.next.snoozeUntilTs > ReminderVM.nowMs)
+                                        target = page.next.snoozeUntilTs
+                                    var m = Math.max(0, Math.ceil((target - ReminderVM.nowMs) / 60000))
+                                    if (m <= 0)
+                                        return "现在"
+                                    return Fmt.countdownText(m)
                                 }
                             }
                         }
@@ -134,7 +137,8 @@ Item {
                             role: "display"
                             font.pixelSize: page.theme.px(46)
                             color: page.hasNext ? page.theme.primaryInk : page.theme.primary
-                            text: page.hasNext ? page.next.displayTime : "✓"
+                            text: (page.hasNext && page.next && page.next.displayTime !== undefined) ? page.next.displayTime
+                                : (page.hasPlans ? "✓" : "＋")
                             wrapMode: Text.NoWrap
                         }
 
@@ -142,7 +146,8 @@ Item {
                             width: parent.width
                             theme: page.theme
                             role: "heading"
-                            text: page.hasNext ? page.next.title : "今天的提醒都完成啦"
+                            text: (page.hasNext && page.next && page.next.title !== undefined) ? page.next.title
+                                : (page.hasPlans ? "今天的提醒都完成啦" : "还没有提醒")
                             wrapMode: Text.WordWrap
                         }
 
@@ -151,7 +156,10 @@ Item {
                             theme: page.theme
                             role: "body"
                             color: page.theme.inkSoft
-                            text: page.hasNext ? (page.next.dose || "") : "记得喝水、活动一下，晚上再测一次血压"
+                            text: page.hasNext && page.next ? (page.next.dose || "")
+                                : (page.hasPlans
+                                    ? "记得喝水、活动一下，晚上再测一次血压"
+                                    : "点下面「提醒」，再点右上角「新建」，添加第一条吃药或喝水提醒。")
                             wrapMode: Text.WordWrap
                         }
                     }
@@ -164,6 +172,7 @@ Item {
                     color: page.theme.surface
                     border.width: 2
                     border.color: page.theme.line
+                    visible: page.hasPlans && ReminderVM.todayTotal > 0
 
                     Column {
                         id: progressBody

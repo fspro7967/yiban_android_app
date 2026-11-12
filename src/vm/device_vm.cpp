@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QRegularExpression>
 #include <QTextToSpeech>
+#include <QTimer>
 
 DeviceVM::DeviceVM(QObject *parent)
     : QObject(parent)
@@ -21,6 +22,26 @@ DeviceVM::DeviceVM(QObject *parent)
         m_tts->setRate(-0.15);
     }
     connect(AppCore::instance(), &AppCore::toast, this, &DeviceVM::toast);
+    connect(AppCore::instance(), &AppCore::demoModeChanged,
+            this, &DeviceVM::demoModeChanged);
+
+    // 进出安静时段时要通知界面，并打断正在进行的播报。
+    m_quietActive = nightQuietNow();
+    m_quietTimer = new QTimer(this);
+    m_quietTimer->setInterval(30 * 1000);
+    connect(m_quietTimer, &QTimer::timeout, this, &DeviceVM::checkQuietWindow);
+    m_quietTimer->start();
+}
+
+void DeviceVM::checkQuietWindow()
+{
+    const bool active = nightQuietNow();
+    if (active == m_quietActive)
+        return;
+    m_quietActive = active;
+    if (active)
+        stopSpeaking();
+    emit voiceChanged();
 }
 
 bool DeviceVM::audioReady() const
@@ -60,7 +81,20 @@ void DeviceVM::setNightQuiet(bool on)
     if (m_nightQuiet == on)
         return;
     m_nightQuiet = on;
+    m_quietActive = nightQuietNow();
+    if (m_quietActive)
+        stopSpeaking();
     emit voiceChanged();
+}
+
+bool DeviceVM::demoMode() const
+{
+    return AppCore::instance()->demoMode();
+}
+
+void DeviceVM::setDemoMode(bool on)
+{
+    AppCore::instance()->setDemoMode(on);
 }
 
 bool DeviceVM::saveNetwork(const QString &serverUrl)
@@ -109,10 +143,9 @@ void DeviceVM::unpair()
 
 void DeviceVM::speak(const QString &text, const QString &tag)
 {
-    Q_UNUSED(tag)
     if (text.trimmed().isEmpty() || !m_voiceEnabled)
         return;
-    if (nightQuietNow())
+    if (nightQuietNow() && !tag.startsWith(QStringLiteral("manual")))
         return;
     if (!audioReady()) {
         emit commandRejected(QStringLiteral("audio_unavailable"),

@@ -59,6 +59,17 @@ bool PlanVM::updatePlan(qint64 planId, const QVariantMap &patch)
     return true;
 }
 
+bool PlanVM::restorePlan(qint64 planId)
+{
+    QString error;
+    if (!AppCore::instance()->restorePlan(planId, &error)) {
+        emit commandRejected(error, facadeErrorText(error));
+        return false;
+    }
+    emit plansChanged();
+    return true;
+}
+
 bool PlanVM::deletePlan(qint64 planId)
 {
     QString error;

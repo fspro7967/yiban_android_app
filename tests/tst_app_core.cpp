@@ -50,12 +50,83 @@ private slots:
     void unknownOccurrenceIsRejected();
     void addingPlanKeepsTodaysProgress();
     void nextDayPreviewAfterTodayDone();
+    void demoDomainsAreIsolated();
+    void restorePlanKeepsProgress();
+    void statsTodayFollowsOccurrences();
+    void realStatsStartFromFirstUse();
 
 private:
     // 建一条 5~30 分钟之后的 daily 计划，返回 planId；临近午夜返回 0（调用方 QSKIP）。
     qint64 createPlanAhead(int minutesAhead, QString *hhmm = nullptr);
     QVariantMap occurrenceForPlan(qint64 planId) const;
 };
+
+
+void FacadeCoreTest::demoDomainsAreIsolated()
+{
+    AppCore *core = AppCore::instance();
+
+    core->setDemoMode(false);
+    QVERIFY(!core->demoMode());
+    QCOMPARE(core->plans().size(), 0);
+    QCOMPARE(core->todayTotal(), 0);
+    QCOMPARE(core->waterCups(), 0);
+
+    const qint64 realPlanId = createPlanAhead(20);
+    if (realPlanId == 0)
+        QSKIP("临近午夜，今天不会产生 occurrence");
+    QCOMPARE(core->plans().size(), 1);
+    QVERIFY(!occurrenceForPlan(realPlanId).isEmpty());
+
+    core->setProfile(QStringLiteral("真实奶奶"), QStringLiteral("真实家人"),
+                     QStringLiteral("139 0000 0000"));
+    QCOMPARE(core->caregiverName(), QStringLiteral("真实家人"));
+
+    core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    QCOMPARE(core->waterCups(), 1);
+
+    core->setDemoMode(true);
+    QVERIFY(core->demoMode());
+    QCOMPARE(core->caregiverName(), QStringLiteral("女儿 陈晓"));
+    QCOMPARE(core->todayTotal(), 4);
+    QCOMPARE(core->plans().size(), 4);
+    core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    QCOMPARE(core->waterCups(), 4);
+
+    // 两个域的计划 id 都从 1 开始；确认演示 occurrence 后切回真实域，
+    // 真实域的同 id occurrence 不能被演示状态污染。
+    qint64 demoOccurrenceId = 0;
+    for (const QVariant &entry : core->occurrencesToday()) {
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("state")).toString() != QStringLiteral("confirmed")) {
+            demoOccurrenceId = occ.value(QStringLiteral("occurrenceId")).toLongLong();
+            break;
+        }
+    }
+    QVERIFY(demoOccurrenceId > 0);
+    QVERIFY(core->confirm(demoOccurrenceId));
+
+    core->setDemoMode(false);
+    QVERIFY(!core->demoMode());
+    QCOMPARE(core->plans().size(), 1);
+    QCOMPARE(core->waterCups(), 1);
+    QCOMPARE(core->caregiverName(), QStringLiteral("真实家人"));
+    const QVariantMap realOccurrence = occurrenceForPlan(realPlanId);
+    QVERIFY(!realOccurrence.isEmpty());
+    QCOMPARE(realOccurrence.value(QStringLiteral("state")).toString(), QStringLiteral("pending"));
+
+    core->setDemoMode(true);
+    QCOMPARE(core->waterCups(), 4);
+    QCOMPARE(core->plans().size(), 4);
+    bool demoStillConfirmed = false;
+    for (const QVariant &entry : core->occurrencesToday()) {
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("occurrenceId")).toLongLong() == demoOccurrenceId
+            && occ.value(QStringLiteral("state")).toString() == QStringLiteral("confirmed"))
+            demoStillConfirmed = true;
+    }
+    QVERIFY(demoStillConfirmed);
+}
 
 void FacadeCoreTest::init()
 {
@@ -400,3 +471,74 @@ void FacadeCoreTest::addingPlanKeepsTodaysProgress()
 
 QTEST_GUILESS_MAIN(FacadeCoreTest)
 #include "tst_app_core.moc"
+
+void FacadeCoreTest::restorePlanKeepsProgress()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = createPlanAhead(15);
+    if (planId == 0)
+        QSKIP("临近午夜，今天不会产生 occurrence");
+
+    const qint64 id = occurrenceForPlan(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+    QVERIFY(core->confirm(id));
+    const int doneBefore = core->todayDone();
+    const int plansBefore = core->plans().size();
+
+    QVERIFY(core->deletePlan(planId));
+    QVERIFY(occurrenceForPlan(planId).isEmpty());
+    QCOMPARE(core->todayDone(), doneBefore - 1);
+
+    // 撤销删除：计划回来，今天已确认的进度也回来。
+    QString error;
+    QVERIFY2(core->restorePlan(planId, &error), qPrintable(error));
+    QCOMPARE(core->plans().size(), plansBefore);
+    QCOMPARE(occurrenceForPlan(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("confirmed"));
+    QCOMPARE(core->todayDone(), doneBefore);
+
+    QVERIFY(!core->restorePlan(planId, &error));
+    QCOMPARE(error, QStringLiteral("plan_not_found"));
+}
+
+void FacadeCoreTest::statsTodayFollowsOccurrences()
+{
+    // 统计的"今天"必须和首页的 todayDone / todayTotal 一致，并随确认/新增变化。
+    AppCore *core = AppCore::instance();
+    QSignalSpy spy(core, &AppCore::statsChanged);
+
+    auto today = [core] { return core->stats(7).last().toMap(); };
+    QCOMPARE(today().value(QStringLiteral("total")).toInt(), core->todayTotal());
+    QCOMPARE(today().value(QStringLiteral("done")).toInt(), core->todayDone());
+
+    const qint64 planId = createPlanAhead(15);
+    if (planId == 0)
+        QSKIP("临近午夜，今天不会产生 occurrence");
+    QVERIFY(spy.count() > 0);
+    QCOMPARE(today().value(QStringLiteral("total")).toInt(), core->todayTotal());
+
+    spy.clear();
+    const qint64 id = occurrenceForPlan(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+    QVERIFY(core->confirm(id));
+    QVERIFY(spy.count() > 0);
+    QCOMPARE(today().value(QStringLiteral("done")).toInt(), core->todayDone());
+    // 还没到点的提醒不算漏做
+    QCOMPARE(today().value(QStringLiteral("missed")).toInt(), 0);
+}
+
+void FacadeCoreTest::realStatsStartFromFirstUse()
+{
+    AppCore *core = AppCore::instance();
+    core->setDemoMode(false);
+
+    // 真实数据域今天才开始用：统计只有今天一格，没有演示用的历史曲线。
+    QCOMPARE(core->stats(7).size(), 1);
+    QCOMPARE(core->stats(30).size(), 1);
+    const QVariantMap day = core->stats(7).first().toMap();
+    QVERIFY(day.value(QStringLiteral("isToday")).toBool());
+    QCOMPARE(day.value(QStringLiteral("date")).toString(),
+             QDate::currentDate().toString(Qt::ISODate));
+    QCOMPARE(day.value(QStringLiteral("total")).toInt(), core->todayTotal());
+
+    core->setDemoMode(true);
+    QCOMPARE(core->stats(7).size(), 7);
+}

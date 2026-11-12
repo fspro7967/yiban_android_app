@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 
-// 5 秒撤销条：误点确认、误记一杯水时留一条退路（R3-9）。
+// 5 秒撤销条：误点确认、误记一杯水、误删提醒时留一条退路（R3-9）。
 Rectangle {
     id: bar
 
@@ -10,6 +10,7 @@ Rectangle {
     property bool active: false
     property string message: ""
     property int secondsLeft: 5
+    property int totalSeconds: 5
 
     signal undo()
 
@@ -52,7 +53,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.bottom: parent.bottom
         anchors.margins: 1
-        width: Math.max(0, (parent.width - 2) * Math.min(1, bar.secondsLeft / 5))
+        width: Math.max(0, (parent.width - 2) * Math.min(1, bar.secondsLeft / Math.max(1, bar.totalSeconds)))
         height: bar.theme.px(4)
         radius: height / 2
         color: bar.theme.reminderAccent

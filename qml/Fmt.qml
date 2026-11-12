@@ -60,7 +60,9 @@ QtObject {
             return m + " 分钟后"
         var h = Math.floor(m / 60)
         var r = m % 60
-        return h + " 小时后" + (r > 0 ? " " + r + " 分" : "")
+        if (h >= 24)
+            return Math.floor(h / 24) + " 天后"
+        return h + " 小时" + (r > 0 ? " " + r + " 分" : "") + "后"
     }
 
     function durationText(minutes) {
@@ -74,13 +76,13 @@ QtObject {
         return h + " 小时 " + r + " 分钟"
     }
 
+    // 按次数加权：Σ完成 / Σ应做。没有提醒的日子不拉低完成率，
+    // 首页磁贴和统计页都走这一个函数，口径一致。
     function averageRate(list) {
-        if (!list || list.length === 0)
+        var total = sumTotal(list)
+        if (total === 0)
             return 0
-        var sum = 0
-        for (var i = 0; i < list.length; ++i)
-            sum += list[i].rate
-        return Math.round(sum / list.length)
+        return Math.round(sumDone(list) * 100 / total)
     }
 
     function sumDone(list) {
@@ -97,18 +99,25 @@ QtObject {
         return n
     }
 
+    // 只数真正过期没做的：今天还没到点的提醒不算漏做。
     function sumMissed(list) {
         var n = 0
         for (var i = 0; list && i < list.length; ++i)
-            n += Math.max(0, list[i].total - list[i].done)
+            n += list[i].missed !== undefined ? list[i].missed : Math.max(0, list[i].total - list[i].done)
         return n
     }
 
+    // 连续全部完成的天数。今天还没做完不打断连续（还有机会），没有提醒的日子跳过。
     function streak(list) {
         var n = 0
         for (var i = list ? list.length - 1 : -1; i >= 0; --i) {
-            if (list[i].rate >= 100)
+            var item = list[i]
+            if (item.total === 0)
+                continue
+            if (item.done >= item.total)
                 ++n
+            else if (item.isToday && (item.missed || 0) === 0)
+                continue
             else
                 break
         }
@@ -119,9 +128,11 @@ QtObject {
         var days = list ? list.length : 0
         var missed = sumMissed(list)
         var rate = averageRate(list)
+        if (sumTotal(list) === 0)
+            return "还没有统计数据。先添加提醒，完成一次后会在这里显示。"
         if (missed === 0)
             return "最近 " + days + " 天完成率 " + rate + "%，一次都没漏。"
-        return "最近 " + days + " 天完成率 " + rate + "%，有 " + missed + " 天漏了提醒。"
+        return "最近 " + days + " 天完成率 " + rate + "%，漏了 " + missed + " 次提醒。"
     }
 
     property Timer clock: Timer {

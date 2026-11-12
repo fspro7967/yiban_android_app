@@ -10,9 +10,6 @@ Rectangle {
     property string message: ""
     property bool shown: false
 
-    anchors.horizontalCenter: parent.horizontalCenter
-    anchors.top: parent.top
-    anchors.topMargin: theme.px(20)
     z: 300
 
     width: Math.min(toastText.implicitWidth + theme.px(40), parent.width - theme.px(40))

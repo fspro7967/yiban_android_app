@@ -23,6 +23,7 @@ RecordVM::RecordVM(QObject *parent)
 {
     AppCore *core = AppCore::instance();
     connect(core, &AppCore::recordsChanged, this, &RecordVM::recordsChanged);
+    connect(core, &AppCore::statsChanged, this, &RecordVM::statsChanged);
     connect(core, &AppCore::toast, this, &RecordVM::toast);
 }
 

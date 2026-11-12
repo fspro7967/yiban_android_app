@@ -14,8 +14,9 @@ class RecordVM : public QObject
     QML_SINGLETON
 
     Q_PROPERTY(QVariantList records READ records NOTIFY recordsChanged)
-    Q_PROPERTY(QVariantList stats7 READ stats7 NOTIFY recordsChanged)
-    Q_PROPERTY(QVariantList stats30 READ stats30 NOTIFY recordsChanged)
+    // 统计依赖今天的 occurrence（确认/新增/删除都会变），单独用 statsChanged 通知。
+    Q_PROPERTY(QVariantList stats7 READ stats7 NOTIFY statsChanged)
+    Q_PROPERTY(QVariantList stats30 READ stats30 NOTIFY statsChanged)
     Q_PROPERTY(int waterCups READ waterCups NOTIFY recordsChanged)
     Q_PROPERTY(int waterGoal READ waterGoal NOTIFY recordsChanged)
     Q_PROPERTY(QString sleepStart READ sleepStart NOTIFY recordsChanged)
@@ -46,6 +47,7 @@ public:
 
 signals:
     void recordsChanged();
+    void statsChanged();
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
 };

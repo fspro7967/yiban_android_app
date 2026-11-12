@@ -39,7 +39,9 @@ Item {
             Layout.topMargin: page.theme.gapSmall
             theme: page.theme
             title: "提醒"
-            subtitle: ReminderVM.todayDone + " / " + ReminderVM.todayTotal
+            subtitle: ReminderVM.todayTotal > 0
+                ? ReminderVM.todayDone + " / " + ReminderVM.todayTotal
+                : "还没有提醒"
             showBack: true
             actionText: "新建"
             onBack: page.back()
@@ -398,13 +400,19 @@ Item {
         function openFor(item) {
             target = item
             title = "管理「" + item.title + "」"
-            message = "删除后今天不再提醒。"
+            message = "删除后今天不再提醒；删错了可以在 5 秒内点「撤销」。"
             open()
         }
 
         onAccepted: {
             if (target) {
-                PlanVM.deletePlan(target.planId)
+                var planId = target.planId
+                var title = target.title
+                if (PlanVM.deletePlan(planId)) {
+                    Undo.show("已删除「" + title + "」", function () {
+                        PlanVM.restorePlan(planId)
+                    })
+                }
                 target = null
             }
         }
