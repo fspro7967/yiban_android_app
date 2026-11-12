@@ -75,7 +75,7 @@ Item {
         anchors.fill: parent
         onClicked: {
             var t = Date.now()
-            if (t - row._lastToggle < 300)
+            if (Fmt.tooSoon(row._lastToggle, t, 300))
                 return
             row._lastToggle = t
             row.toggled(!row.checked)

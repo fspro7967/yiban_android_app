@@ -64,4 +64,3 @@ compile_commands.json
 .gradle-home/
 .android-home/
 build-desktop/
-agent/buglist.md

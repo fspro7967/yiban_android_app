@@ -80,7 +80,7 @@ Rectangle {
         onCanceled: tile.scale = 1.0
         onClicked: {
             var t = Date.now()
-            if (t - lastClick < 400)
+            if (Fmt.tooSoon(lastClick, t, 400))
                 return
             lastClick = t
             tile.clicked()

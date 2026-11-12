@@ -18,6 +18,8 @@ Item {
     property bool invalid: false
     property string errorText: ""
 
+    signal editingFinished()
+
     implicitHeight: column.implicitHeight
 
     function forceFocus() {
@@ -75,6 +77,7 @@ Item {
                 maximumLength: field.maxLength
                 clip: true
                 selectByMouse: true
+                onEditingFinished: field.editingFinished()
             }
         }
 

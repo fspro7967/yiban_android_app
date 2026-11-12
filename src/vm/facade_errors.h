@@ -27,6 +27,12 @@ inline QString facadeErrorText(const QString &code)
         return QStringLiteral("重复规则不合法");
     if (code == QStringLiteral("empty_times"))
         return QStringLiteral("请至少设置一个提醒时间");
+    if (code == QStringLiteral("late_not_allowed"))
+        return QStringLiteral("这条提醒已经过时，按要求不能再补做");
+    if (code == QStringLiteral("empty_weekdays"))
+        return QStringLiteral("每周重复请至少选一天");
+    if (code == QStringLiteral("nothing_today"))
+        return QStringLiteral("这条提醒今天本来就没有");
     if (code == QStringLiteral("water_goal_reached"))
         return QStringLiteral("今天的水已经喝够了");
     if (code == QStringLiteral("audio_unavailable"))

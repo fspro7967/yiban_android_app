@@ -80,3 +80,25 @@ bool PlanVM::deletePlan(qint64 planId)
     emit plansChanged();
     return true;
 }
+
+bool PlanVM::skipToday(qint64 planId)
+{
+    QString error;
+    if (!AppCore::instance()->skipToday(planId, &error)) {
+        emit commandRejected(error, facadeErrorText(error));
+        return false;
+    }
+    emit plansChanged();
+    return true;
+}
+
+bool PlanVM::unskipToday(qint64 planId)
+{
+    QString error;
+    if (!AppCore::instance()->unskipToday(planId, &error)) {
+        emit commandRejected(error, facadeErrorText(error));
+        return false;
+    }
+    emit plansChanged();
+    return true;
+}

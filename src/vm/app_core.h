@@ -64,6 +64,9 @@ public:
     bool deletePlan(qint64 planId, QString *error = nullptr);
     // 撤销删除：软删除的计划恢复原样，今天已确认/推迟的进度一并恢复。
     bool restorePlan(qint64 planId, QString *error = nullptr);
+    // 周期计划"只删今天这一次"：今天不再提醒，以后照常；撤销时恢复今天的进度。
+    bool skipToday(qint64 planId, QString *error = nullptr);
+    bool unskipToday(qint64 planId, QString *error = nullptr);
 
     // ---- 记录 ----
     qint64 addRecord(const QString &type, double value, const QString &unit);
@@ -119,6 +122,7 @@ private:
         QDate startDate;                            // 真实数据域：开始使用的日期
         QVariantMap history;                        // "yyyy-MM-dd" → {total, done, missed}
         QHash<qint64, QVariantList> deletedOccurrences; // planId → 删除前今天的 occurrence
+        QHash<qint64, QVariantList> skippedOccurrences; // planId → 跳过前今天的 occurrence
     };
 
     void seedDemo();
@@ -167,4 +171,5 @@ private:
     QDate m_startDate;
     QVariantMap m_history;
     QHash<qint64, QVariantList> m_deletedOccurrences;
+    QHash<qint64, QVariantList> m_skippedOccurrences;
 };

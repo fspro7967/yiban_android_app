@@ -12,6 +12,8 @@ Item {
     property Theme theme
     property string timeText: "12:00"
     property string repeatKind: "每天"
+    // 过时（错过）后是否还允许点"完成"补做。随餐药等对时间点要求严格的关掉。
+    property bool allowLate: true
     property string error: ""
     property string errorField: "" // "name" / "time"
 
@@ -83,7 +85,8 @@ Item {
                 note: noteField.text.trim(),
                 rule: rule,
                 windowMin: 30,
-                escalateAfterMin: 15
+                escalateAfterMin: 15,
+                allowLate: page.allowLate
             }))
             page.saved()
     }
@@ -178,6 +181,7 @@ Item {
 
         Flickable {
             id: scroll
+            objectName: "addScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: page.theme.pageMargin
@@ -369,6 +373,42 @@ Item {
                                     onClicked: page.repeatKind = modelData
                                 }
                             }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: form.width
+                    height: lateColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: page.theme.surface
+                    border.width: 2
+                    border.color: page.theme.line
+
+                    Column {
+                        id: lateColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(12)
+                        spacing: page.theme.px(4)
+
+                        ToggleRow {
+                            objectName: "allowLateToggle"
+                            width: parent.width
+                            theme: page.theme
+                            title: "过时后允许补做"
+                            subtitle: page.allowLate ? "错过后仍可补做" : "错过后不能补做"
+                            checked: page.allowLate
+                            onToggled: function (value) { page.allowLate = value }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: "吃药等对时间要求严格的提醒建议关闭，避免过了时间再补吃。"
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }

@@ -4,6 +4,7 @@
 #include <QTime>
 
 #include "app_core.h"
+#include "profile_vm.h"
 
 // 这些用例锁的是 facade 契约（形状 + 状态机 + 错误码），不是像素。
 // 后端替换 AppCore 内部实现（SQLite / 同步队列）后，必须原样通过。
@@ -54,6 +55,11 @@ private slots:
     void restorePlanKeepsProgress();
     void statsTodayFollowsOccurrences();
     void realStatsStartFromFirstUse();
+    void strictPlanRejectsLateConfirm();
+    void updatePlanValidatesAndResetsMovedOccurrence();
+    void skipTodayKeepsPlanAndUndoRestoresProgress();
+    void caregiverPhoneValidation();
+    void strictPlanExpiredWhileAwayIsNotFired();
 
 private:
     // 建一条 5~30 分钟之后的 daily 计划，返回 planId；临近午夜返回 0（调用方 QSKIP）。
@@ -469,8 +475,6 @@ void FacadeCoreTest::addingPlanKeepsTodaysProgress()
     QFAIL("新建计划后原来的 occurrence 不见了");
 }
 
-QTEST_GUILESS_MAIN(FacadeCoreTest)
-#include "tst_app_core.moc"
 
 void FacadeCoreTest::restorePlanKeepsProgress()
 {
@@ -542,3 +546,186 @@ void FacadeCoreTest::realStatsStartFromFirstUse()
     core->setDemoMode(true);
     QCOMPARE(core->stats(7).size(), 7);
 }
+
+void FacadeCoreTest::strictPlanRejectsLateConfirm()
+{
+    AppCore *core = AppCore::instance();
+    const QTime now = QTime::currentTime();
+    if (now.hour() < 2)
+        QSKIP("凌晨两点前造不出“两小时前”的提醒");
+    const QString past = now.addSecs(-2 * 60 * 60).toString(QStringLiteral("HH:mm"));
+
+    QVariantMap strict = planMap(QStringLiteral("随餐药"), dailyRule(past));
+    strict.insert(QStringLiteral("allowLate"), false);
+    const qint64 strictId = core->createPlan(strict);
+    const qint64 lenientId = core->createPlan(planMap(QStringLiteral("喝水"), dailyRule(past)));
+    QVERIFY(strictId > 0 && lenientId > 0);
+    QCOMPARE(core->plans().last().toMap().value(QStringLiteral("allowLate")).toBool(), true);
+
+    // 一秒一个 tick：先到点提醒，再因窗口过期变成 missed。
+    QTRY_COMPARE_WITH_TIMEOUT(occurrenceForPlan(strictId).value(QStringLiteral("state")).toString(),
+                              QStringLiteral("missed"), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(occurrenceForPlan(lenientId).value(QStringLiteral("state")).toString(),
+                              QStringLiteral("missed"), 5000);
+
+    const QVariantMap strictOcc = occurrenceForPlan(strictId);
+    QCOMPARE(strictOcc.value(QStringLiteral("allowLate")).toBool(), false);
+    QCOMPARE(strictOcc.value(QStringLiteral("canConfirm")).toBool(), false);
+    QString error;
+    QVERIFY(!core->confirm(strictOcc.value(QStringLiteral("occurrenceId")).toLongLong(), &error));
+    QCOMPARE(error, QStringLiteral("late_not_allowed"));
+
+    const QVariantMap lenientOcc = occurrenceForPlan(lenientId);
+    QCOMPARE(lenientOcc.value(QStringLiteral("canConfirm")).toBool(), true);
+    QVERIFY(core->confirm(lenientOcc.value(QStringLiteral("occurrenceId")).toLongLong()));
+}
+
+void FacadeCoreTest::updatePlanValidatesAndResetsMovedOccurrence()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = createPlanAhead(20);
+    if (planId == 0)
+        QSKIP("临近午夜，今天不会产生 occurrence");
+
+    QString error;
+    QVariantMap badWeekly;
+    badWeekly.insert(QStringLiteral("kind"), QStringLiteral("weekly"));
+    badWeekly.insert(QStringLiteral("times"), QStringList{QStringLiteral("08:00")});
+    QVERIFY(!core->updatePlan(planId, {{QStringLiteral("rule"), badWeekly}}, &error));
+    QCOMPARE(error, QStringLiteral("empty_weekdays"));
+
+    QVariantMap badKind;
+    badKind.insert(QStringLiteral("kind"), QStringLiteral("hourly"));
+    QVERIFY(!core->updatePlan(planId, {{QStringLiteral("rule"), badKind}}, &error));
+    QCOMPARE(error, QStringLiteral("bad_rule_kind"));
+
+    const qint64 id = occurrenceForPlan(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+    QVERIFY(core->snooze(id));
+    QCOMPARE(occurrenceForPlan(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("snoozed"));
+
+    const QTime later = QTime::currentTime().addSecs(40 * 60);
+    if (QTime::currentTime().secsTo(later) < 0)
+        QSKIP("临近午夜");
+    const QString newTime = later.toString(QStringLiteral("HH:mm"));
+    QVERIFY2(core->updatePlan(planId, {{QStringLiteral("rule"), dailyRule(newTime)}}, &error),
+             qPrintable(error));
+    const QVariantMap moved = occurrenceForPlan(planId);
+    QCOMPARE(QDateTime::fromMSecsSinceEpoch(moved.value(QStringLiteral("dueTs")).toLongLong())
+                 .toString(QStringLiteral("HH:mm")),
+             newTime);
+    // 改了时间：推迟状态清零，重新等新时间到点。
+    QCOMPARE(moved.value(QStringLiteral("state")).toString(), QStringLiteral("pending"));
+    QCOMPARE(moved.value(QStringLiteral("snoozeCount")).toInt(), 0);
+
+    QVERIFY(core->deletePlan(planId));
+    QVERIFY(!core->updatePlan(planId, {{QStringLiteral("title"), QStringLiteral("x")}}, &error));
+    QCOMPARE(error, QStringLiteral("plan_not_found"));
+}
+
+void FacadeCoreTest::skipTodayKeepsPlanAndUndoRestoresProgress()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = createPlanAhead(15);
+    if (planId == 0)
+        QSKIP("临近午夜，今天不会产生 occurrence");
+    const int plansBefore = core->plans().size();
+    const qint64 id = occurrenceForPlan(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+    QVERIFY(core->confirm(id));
+    const int doneBefore = core->todayDone();
+
+    QString error;
+    QVERIFY2(core->skipToday(planId, &error), qPrintable(error));
+    QVERIFY(occurrenceForPlan(planId).isEmpty());
+    QCOMPARE(core->plans().size(), plansBefore); // 计划还在，以后照常
+    QCOMPARE(core->todayDone(), doneBefore - 1);
+    QVERIFY(!core->skipToday(planId, &error));
+    QCOMPARE(error, QStringLiteral("nothing_today"));
+
+    // 明天照常出现在"接下来"里
+    bool tomorrow = false;
+    for (const QVariant &entry : core->upcomingOccurrences())
+        tomorrow |= entry.toMap().value(QStringLiteral("planId")).toLongLong() == planId;
+    QVERIFY(tomorrow);
+
+    QVERIFY2(core->unskipToday(planId, &error), qPrintable(error));
+    QCOMPARE(occurrenceForPlan(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("confirmed"));
+    QCOMPARE(core->todayDone(), doneBefore);
+    QVERIFY(!core->unskipToday(planId, &error));
+}
+
+void FacadeCoreTest::caregiverPhoneValidation()
+{
+    ProfileVM vm;
+    const QStringList good = {
+        QStringLiteral("13800005678"),   QStringLiteral("138 0000 5678"),
+        QStringLiteral("138-0000-5678"), QStringLiteral("+86 138 0000 5678"),
+        QStringLiteral("008613800005678"), QStringLiteral("020-12345678"),
+        QStringLiteral("010 8888 6666"), QStringLiteral("0755-1234567"),
+    };
+    for (const QString &phone : good)
+        QVERIFY2(vm.phoneProblem(phone).isEmpty(), qPrintable(phone + QStringLiteral(" → ") + vm.phoneProblem(phone)));
+
+    const QStringList bad = {
+        QString(), QStringLiteral("1234567"), QStringLiteral("1380000567"),
+        QStringLiteral("123456789012"), QStringLiteral("12800005678"),
+        QStringLiteral("138O0005678"), QStringLiteral("+1 415 555 0100"),
+        QStringLiteral("0201234"), QStringLiteral("-------"),
+    };
+    for (const QString &phone : bad)
+        QVERIFY2(!vm.phoneProblem(phone).isEmpty(), qPrintable(phone));
+
+    QCOMPARE(vm.formatPhone(QStringLiteral("+86-13800005678")), QStringLiteral("138 0000 5678"));
+    QCOMPARE(vm.formatPhone(QStringLiteral("02012345678")), QStringLiteral("020-1234 5678"));
+    QCOMPARE(vm.formatPhone(QStringLiteral("07551234567")), QStringLiteral("0755-123 4567"));
+
+    QVERIFY(!vm.updateCaregiver(QStringLiteral("女儿"), QStringLiteral("1234567")));
+    QVERIFY(vm.updateCaregiver(QStringLiteral("女儿"), QStringLiteral("13800005678")));
+    QCOMPARE(AppCore::instance()->caregiverPhone(), QStringLiteral("138 0000 5678"));
+}
+
+
+void FacadeCoreTest::strictPlanExpiredWhileAwayIsNotFired()
+{
+    // bug 14：App 没在跑的时候，需按时完成的提醒整个有效期都过了；
+    // 回来后应直接记为错过，不能再弹全屏提醒。允许补做的照旧提醒。
+    AppCore *core = AppCore::instance();
+    const QTime now = QTime::currentTime();
+    if (now.hour() < 2)
+        QSKIP("凌晨两点前造不出“两小时前”的提醒");
+    const QString past = now.addSecs(-2 * 60 * 60).toString(QStringLiteral("HH:mm"));
+
+    QSignalSpy due(core, &AppCore::reminderDue);
+    QVariantMap strict = planMap(QStringLiteral("随餐药"), dailyRule(past));
+    strict.insert(QStringLiteral("allowLate"), false);
+    const qint64 strictId = core->createPlan(strict);
+    const qint64 lenientId = core->createPlan(planMap(QStringLiteral("喝水"), dailyRule(past)));
+    QVERIFY(strictId > 0 && lenientId > 0);
+    const qint64 strictOcc = occurrenceForPlan(strictId).value(QStringLiteral("occurrenceId")).toLongLong();
+    const qint64 lenientOcc = occurrenceForPlan(lenientId).value(QStringLiteral("occurrenceId")).toLongLong();
+
+    QTRY_COMPARE_WITH_TIMEOUT(occurrenceForPlan(strictId).value(QStringLiteral("state")).toString(),
+                              QStringLiteral("missed"), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(occurrenceForPlan(lenientId).value(QStringLiteral("state")).toString(),
+                              QStringLiteral("missed"), 5000);
+
+    bool strictFired = false;
+    bool lenientFired = false;
+    for (const QList<QVariant> &args : std::as_const(due)) {
+        const qint64 id = args.first().toMap().value(QStringLiteral("occurrenceId")).toLongLong();
+        strictFired |= id == strictOcc;
+        lenientFired |= id == lenientOcc;
+    }
+    QVERIFY2(!strictFired, "过时且不能补做的提醒不应再弹出");
+    QVERIFY(lenientFired);
+
+    for (const QVariant &entry : core->eventLog()) {
+        const QVariantMap event = entry.toMap();
+        if (event.value(QStringLiteral("occurrenceId")).toLongLong() == strictOcc)
+            QVERIFY(event.value(QStringLiteral("action")).toString() != QStringLiteral("fire"));
+    }
+}
+
+QTEST_GUILESS_MAIN(FacadeCoreTest)
+#include "tst_app_core.moc"

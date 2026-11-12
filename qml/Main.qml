@@ -26,7 +26,7 @@ ApplicationWindow {
 
     function navigate(pageName) {
         var t = Date.now()
-        if (t - window.lastNavigate < 400)
+        if (Fmt.tooSoon(window.lastNavigate, t, 400))
             return
         window.lastNavigate = t
 

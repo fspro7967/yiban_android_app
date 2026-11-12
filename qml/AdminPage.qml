@@ -7,6 +7,7 @@ import QtQuick.Layouts
 // 只能从 CaregiverGatePage 验证成功后进入。
 Item {
     id: page
+    objectName: "adminPage"
 
     property Theme theme
 
@@ -14,26 +15,33 @@ Item {
 
     property string contactError: ""
     property string networkError: ""
+    // 电话格式问题：边输边查，但只在用户点过保存或输入框失焦后才标红，避免一敲就报错。
+    property bool phoneTouched: false
+    readonly property string phoneProblem: ProfileVM.phoneProblem(contactPhone.text)
+    readonly property bool nameMissing: contactName.text.trim().length === 0
 
     function saveContact() {
         const name = contactName.text.trim()
         const phone = contactPhone.text.trim()
-        const phonePattern = /^[0-9 +()-]{7,20}$/
+        page.phoneTouched = true
 
         if (name.length === 0) {
             page.contactError = "请填写联系人姓名"
             contactName.forceFocus()
             return
         }
-        if (!phonePattern.test(phone)) {
-            page.contactError = "请填写 7–20 位电话号码，可带空格、+、-"
+        if (page.phoneProblem.length > 0) {
+            page.contactError = page.phoneProblem
             contactPhone.forceFocus()
             return
         }
 
         if (ProfileVM.updateCaregiver(name, phone)) {
             page.contactError = ""
-            Notify.info("紧急联系人已保存")
+            page.phoneTouched = false
+            // 保存后的号码已统一成"138 0000 5678"格式，输入框跟着刷新。
+            contactPhone.text = ProfileVM.caregiverPhone
+            Notify.info("紧急联系人已保存：" + ProfileVM.caregiverPhone)
         } else {
             page.contactError = "保存失败，请检查姓名和电话"
         }
@@ -140,10 +148,14 @@ Item {
                             placeholder: "例如：女儿 陈晓"
                             text: ProfileVM.caregiverName
                             maxLength: 24
+                            invalid: page.contactError.length > 0 && page.nameMissing
+                            errorText: "请填写联系人姓名"
+                            onTextChanged: if (!page.nameMissing && page.contactError === "请填写联系人姓名") page.contactError = ""
                         }
 
                         Field {
                             id: contactPhone
+                            objectName: "contactPhone"
                             width: parent.width
                             theme: page.theme
                             label: "电话"
@@ -151,11 +163,30 @@ Item {
                             text: ProfileVM.caregiverPhone
                             maxLength: 20
                             inputMethodHints: Qt.ImhDialableCharactersOnly
+                            invalid: page.phoneTouched && page.phoneProblem.length > 0
+                            errorText: page.phoneProblem
+                            onEditingFinished: page.phoneTouched = true
+                            onTextChanged: {
+                                if (page.phoneProblem.length === 0 && page.contactError.length > 0 && !page.nameMissing)
+                                    page.contactError = ""
+                            }
                         }
 
                         AppText {
                             width: parent.width
-                            visible: page.contactError.length > 0
+                            visible: page.phoneProblem.length === 0 && contactPhone.text.trim().length > 0
+                                && ProfileVM.formatPhone(contactPhone.text) !== contactPhone.text.trim()
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.primary
+                            text: "✓ 号码正确，保存为 " + ProfileVM.formatPhone(contactPhone.text)
+                            wrapMode: Text.WordWrap
+                        }
+
+                        AppText {
+                            width: parent.width
+                            // 字段自己已经标红显示原因时，这里不再重复同一句。
+                            visible: page.contactError.length > 0 && !contactName.invalid && !contactPhone.invalid
                             theme: page.theme
                             role: "label"
                             color: page.theme.danger

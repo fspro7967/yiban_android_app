@@ -52,6 +52,28 @@ Item {
         close()
     }
 
+    // 提醒开着的时候这一条变成"错过且不允许补做"（有效期走完、时间被往后调）：
+    // 完成键已经不会生效，留着全屏页只会把人卡住，直接收起并说明原因。
+    property Connections lateWatcher: Connections {
+        target: ReminderVM
+        enabled: screen.active && screen.occ !== null
+
+        function onTodayChanged() {
+            var list = ReminderVM.today
+            for (var i = 0; i < list.length; ++i) {
+                var item = list[i]
+                if (item.occurrenceId !== screen.occ.occurrenceId)
+                    continue
+                if (item.state === "missed" && !item.canConfirm) {
+                    var title = item.title
+                    screen.close()
+                    Notify.info("「" + title + "」已过时，按要求不能补做")
+                }
+                return
+            }
+        }
+    }
+
     property Timer escalationTimer: Timer {
         interval: 1000
         repeat: true

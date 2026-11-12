@@ -7,16 +7,18 @@
 #   * 事件日志：重复点按同一状态不会重复记账
 # 后端（B1）替换 AppCore 内部实现后，这些用例必须原样通过。
 
-find_package(Qt6 REQUIRED COMPONENTS Core Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Qml Test)
 
 qt_add_executable(tst_app_core
     tst_app_core.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/app_core.cpp
     ${CMAKE_SOURCE_DIR}/src/vm/app_core.h
+    ${CMAKE_SOURCE_DIR}/src/vm/profile_vm.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/profile_vm.h
 )
 
 target_include_directories(tst_app_core PRIVATE ${CMAKE_SOURCE_DIR}/src/vm)
-target_link_libraries(tst_app_core PRIVATE Qt6::Core Qt6::Test)
+target_link_libraries(tst_app_core PRIVATE Qt6::Core Qt6::Qml Qt6::Test)
 
 add_test(NAME facade_app_core COMMAND tst_app_core)
 set_tests_properties(facade_app_core PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

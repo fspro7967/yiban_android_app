@@ -50,6 +50,7 @@ Item {
 
         Flickable {
             id: scroll
+            objectName: "remindersScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: page.theme.pageMargin
@@ -155,7 +156,10 @@ Item {
                         readonly property bool isDone: modelData.state === "confirmed"
                         readonly property bool isMissed: modelData.state === "missed"
                         readonly property bool isEscalated: modelData.state === "escalated"
-                        readonly property bool canComplete: !isDone && !isMissed
+                        // 能不能点完成由 core 决定：错过后只有"允许过时补做"的计划才能补点。
+                        readonly property bool canComplete: modelData.canConfirm === true
+                        readonly property bool lateMakeup: isMissed && canComplete
+                        readonly property bool strict: modelData.allowLate === false
 
                         width: list.width
                         height: cardColumn.implicitHeight + page.theme.gap * 1.5
@@ -242,7 +246,11 @@ Item {
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: page.theme.button
                                     theme: page.theme
-                                    text: card.isDone ? "已完成" : card.isMissed ? "已错过" : "✓ 完成"
+                                    text: card.isDone ? "已完成"
+                                        : card.lateMakeup ? "✓ 补做"
+                                        : card.isMissed ? "已错过"
+                                        : "✓ 完成"
+                                    subtitle: card.lateMakeup ? "已过时" : ""
                                     kind: "primary"
                                     enabled: card.canComplete
                                     onClicked: page.confirmItem(card.modelData.occurrenceId)
@@ -266,6 +274,18 @@ Item {
                                             page.snoozeItem(card.modelData.occurrenceId)
                                     }
                                 }
+                            }
+
+                            AppText {
+                                width: parent.width
+                                visible: card.strict && !card.isDone
+                                theme: page.theme
+                                role: "label"
+                                color: card.isMissed ? page.theme.danger : page.theme.inkSoft
+                                text: card.isMissed
+                                    ? "已过时，这条提醒要求按时完成，不能补做"
+                                    : "⏱ 需按时完成，错过后不能补做"
+                                wrapMode: Text.WordWrap
                             }
 
                             AppText {
@@ -386,36 +406,9 @@ Item {
         }
     }
 
-    ConfirmDialog {
+    PlanManageSheet {
         id: manageSheet
+        objectName: "manageSheet"
         theme: page.theme
-        title: "管理这条提醒"
-        message: ""
-        confirmText: "删除"
-        cancelText: "取消"
-        danger: true
-
-        property var target: null
-
-        function openFor(item) {
-            target = item
-            title = "管理「" + item.title + "」"
-            message = "删除后今天不再提醒；删错了可以在 5 秒内点「撤销」。"
-            open()
-        }
-
-        onAccepted: {
-            if (target) {
-                var planId = target.planId
-                var title = target.title
-                if (PlanVM.deletePlan(planId)) {
-                    Undo.show("已删除「" + title + "」", function () {
-                        PlanVM.restorePlan(planId)
-                    })
-                }
-                target = null
-            }
-        }
-        onCancelled: target = null
     }
 }

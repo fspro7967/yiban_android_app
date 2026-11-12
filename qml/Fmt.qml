@@ -24,6 +24,14 @@ QtObject {
         return "晚上好"
     }
 
+    // 防连点：距离上次点击不到 gapMs 毫秒就忽略。
+    // 用的是墙上时钟，系统时间被往回调（手动改时间、网络校时）时差值会是负数——
+    // 负数一律当作"已经过了很久"放行，否则在时钟追上之前所有点击都会被吞掉（bug 13）。
+    function tooSoon(lastMs, nowMs, gapMs) {
+        var d = nowMs - lastMs
+        return d >= 0 && d < gapMs
+    }
+
     function pad2(n) {
         return (n < 10 ? "0" : "") + n
     }

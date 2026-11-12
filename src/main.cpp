@@ -89,11 +89,46 @@ int main(int argc, char *argv[])
                     auto *scroll = window->findChild<QObject *>(QStringLiteral("settingsScroll"));
                     if (!scroll)
                         scroll = window->findChild<QObject *>(QStringLiteral("adminScroll"));
+                    if (!scroll)
+                        scroll = window->findChild<QObject *>(QStringLiteral("addScroll"));
+                    if (!scroll)
+                        scroll = window->findChild<QObject *>(QStringLiteral("remindersScroll"));
                     if (scroll) {
                         const qreal bottom = scroll->property("contentHeight").toReal()
                                              - scroll->property("height").toReal();
                         scroll->setProperty("contentY", qMax<qreal>(0, bottom));
                     }
+                });
+            }
+            if (const QByteArray manage = qgetenv("YIBAN_MANAGE"); !manage.isEmpty()) {
+                // 仅截图回归：在提醒页打开第 N 条的管理面板；YIBAN_MANAGE_MODE=edit/deleteAll 切到子页。
+                QTimer::singleShot(700, window, [window, &engine, manage] {
+                    auto *sheet = window->findChild<QObject *>(QStringLiteral("manageSheet"));
+                    auto *vm = engine.singletonInstance<QObject *>(
+                        QStringLiteral("SmartGlasses"), QStringLiteral("ReminderVM"));
+                    if (!sheet || !vm)
+                        return;
+                    const QVariantList today = vm->property("today").toList();
+                    const int index = qBound(0, manage.toInt(), int(today.size()) - 1);
+                    if (today.isEmpty())
+                        return;
+                    QMetaObject::invokeMethod(sheet, "openFor", Q_ARG(QVariant, today.at(index)));
+                    const QString mode = qEnvironmentVariable("YIBAN_MANAGE_MODE");
+                    if (mode == QStringLiteral("edit"))
+                        QMetaObject::invokeMethod(sheet, "startEdit");
+                    else if (!mode.isEmpty())
+                        sheet->setProperty("mode", mode);
+                });
+            }
+            if (const QByteArray phone = qgetenv("YIBAN_ADMIN_PHONE"); !phone.isEmpty()) {
+                // 仅截图回归：在管理后台填一个电话并点保存，检查校验提示。
+                QTimer::singleShot(900, window, [window, phone] {
+                    auto *admin = window->findChild<QObject *>(QStringLiteral("adminPage"));
+                    auto *field = window->findChild<QObject *>(QStringLiteral("contactPhone"));
+                    if (!admin || !field)
+                        return;
+                    field->setProperty("text", QString::fromLocal8Bit(phone));
+                    QMetaObject::invokeMethod(admin, "saveContact");
                 });
             }
             const QByteArray overlay = qgetenv("YIBAN_SHOT_OVERLAY");
@@ -107,7 +142,8 @@ int main(int argc, char *argv[])
                 } else if (overlay == "call") {
                     // 拍呼救倒计时：走 SosButton 同一条入口。
                     QMetaObject::invokeMethod(window, "startSos");
-                } else {
+                } else if (overlay != "keep") {
+                    // keep：保留启动后自然弹出的提醒，用于检查"哪些提醒会弹"。
                     if (auto *reminder = window->findChild<QObject *>(QStringLiteral("reminderScreen")))
                         QMetaObject::invokeMethod(reminder, "close");
                     if (auto *call = window->findChild<QObject *>(QStringLiteral("callScreen")))

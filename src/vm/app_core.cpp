@@ -84,6 +84,12 @@ QString normalizeKind(const QVariantMap &rule)
     return known.contains(kind) ? kind : QString();
 }
 
+bool planAllowsLate(const QVariantMap &plan)
+{
+    // 旧数据没有这个键：默认允许过时后补做。
+    return plan.value(QStringLiteral("allowLate"), true).toBool();
+}
+
 } // namespace
 
 AppCore::AppCore(QObject *parent)
@@ -122,6 +128,7 @@ void AppCore::seedDemo()
     m_autoReminders = true;
     m_history.clear();
     m_deletedOccurrences.clear();
+    m_skippedOccurrences.clear();
 
     m_elderName = QStringLiteral("陈奶奶");
     m_caregiverName = QStringLiteral("女儿 陈晓");
@@ -132,12 +139,14 @@ void AppCore::seedDemo()
         const char *dose;
         const char *note;
         const char *time;
+        bool allowLate;
     };
     const SeedPlan seeds[] = {
-        {"晨起喝水", "温水 1 杯", "小口慢慢喝", "07:00"},
-        {"吃降压药", "苯磺酸氨氯地平 1 片", "早饭后，温水送服", "08:00"},
-        {"吃降糖药", "二甲双胍 1 片", "随午餐服用", "12:00"},
-        {"测血压", "坐稳后测量，记录数值", "测量前安静休息 5 分钟", "18:00"},
+        {"晨起喝水", "温水 1 杯", "小口慢慢喝", "07:00", true},
+        {"吃降压药", "苯磺酸氨氯地平 1 片", "早饭后，温水送服", "08:00", true},
+        // 随餐药：错过了就不能补吃，过时后不允许再点完成。
+        {"吃降糖药", "二甲双胍 1 片", "随午餐服用", "12:00", false},
+        {"测血压", "坐稳后测量，记录数值", "测量前安静休息 5 分钟", "18:00", true},
     };
     for (const SeedPlan &seed : seeds) {
         QVariantMap rule;
@@ -152,6 +161,7 @@ void AppCore::seedDemo()
         plan[QStringLiteral("rule")] = rule;
         plan[QStringLiteral("windowMin")] = kDefaultWindowMin;
         plan[QStringLiteral("escalateAfterMin")] = kDefaultEscalateMin;
+        plan[QStringLiteral("allowLate")] = seed.allowLate;
         plan[QStringLiteral("version")] = 1;
         plan[QStringLiteral("deleted")] = false;
         m_plans.append(plan);
@@ -236,6 +246,7 @@ AppCore::DataSnapshot AppCore::snapshot() const
     data.startDate = m_startDate;
     data.history = m_history;
     data.deletedOccurrences = m_deletedOccurrences;
+    data.skippedOccurrences = m_skippedOccurrences;
     return data;
 }
 
@@ -255,6 +266,7 @@ void AppCore::clearActive()
     m_startDate = QDate::currentDate();
     m_history.clear();
     m_deletedOccurrences.clear();
+    m_skippedOccurrences.clear();
 }
 
 void AppCore::applySnapshot(const DataSnapshot &data)
@@ -271,11 +283,13 @@ void AppCore::applySnapshot(const DataSnapshot &data)
     m_startDate = data.startDate;
     m_history = data.history;
     m_deletedOccurrences = data.deletedOccurrences;
+    m_skippedOccurrences = data.skippedOccurrences;
 
     // 离开这个数据域期间跨了天：先把旧那天的进度归档，再按今天重建。
     if (data.day.isValid() && data.day != m_day) {
         archiveDay(data.day, data.occurrences);
         m_deletedOccurrences.clear();
+        m_skippedOccurrences.clear();
     }
 
     // 从目标数据域的 occurrence 重建今天清单，避免两个域 id 相同导致状态串味。
@@ -320,6 +334,7 @@ void AppCore::onTick()
     if (today != m_day) {
         archiveDay(m_day, m_occurrences);
         m_deletedOccurrences.clear();
+        m_skippedOccurrences.clear();
         m_day = today;
         rebuildToday();
     }
@@ -336,6 +351,20 @@ void AppCore::onTick()
         const QVariantMap occ = entry.toMap();
         const QString state = occ.value(QStringLiteral("state")).toString();
         const qint64 id = occ.value(QStringLiteral("occurrenceId")).toLongLong();
+
+        // 需按时完成的提醒：App 没在运行（被杀/挂起/时间被往后调）期间整个有效期已经过去，
+        // 回来时直接记为错过，不再弹"该做了"——它已经不能补做了（bug 14）。
+        if (!occ.value(QStringLiteral("allowLate"), true).toBool()
+            && (state == QStringLiteral("pending") || state == QStringLiteral("snoozed"))) {
+            const qint64 until = occ.value(QStringLiteral("snoozeUntilTs")).toLongLong();
+            const qint64 base = state == QStringLiteral("snoozed") && until > 0
+                ? until
+                : occ.value(QStringLiteral("dueTs")).toLongLong();
+            if (m_nowMs > base + occ.value(QStringLiteral("windowMin")).toInt() * 60 * 1000) {
+                toMiss.append(id);
+                continue;
+            }
+        }
 
         if (m_autoReminders && state == QStringLiteral("pending")) {
             const int due = minutesOfTime(hhmmFromMs(occ.value(QStringLiteral("dueTs")).toLongLong()));
@@ -448,6 +477,7 @@ void AppCore::rebuildTodayFrom(const QVariantList &source)
             occ[QStringLiteral("windowMin")] = plan.value(QStringLiteral("windowMin"));
             occ[QStringLiteral("escalateAfterMin")] =
                 plan.value(QStringLiteral("escalateAfterMin"));
+            occ[QStringLiteral("allowLate")] = planAllowsLate(plan);
             if (const auto it = previous.constFind(occurrenceId); it != previous.constEnd()) {
                 occ[QStringLiteral("state")] = it->value(QStringLiteral("state"));
                 occ[QStringLiteral("snoozeCount")] = it->value(QStringLiteral("snoozeCount"));
@@ -465,6 +495,8 @@ bool AppCore::planFiresOn(const QVariantMap &plan, const QDate &day)
     const QVariantMap rule = plan.value(QStringLiteral("rule")).toMap();
     const QString kind = normalizeKind(rule);
     if (kind.isEmpty())
+        return false;
+    if (plan.value(QStringLiteral("skipDates")).toStringList().contains(day.toString(Qt::ISODate)))
         return false;
 
     if (kind == QStringLiteral("daily") || kind == QStringLiteral("meal_offset"))
@@ -563,7 +595,12 @@ QVariantMap AppCore::publicOccurrence(const QVariantMap &plan, const QVariantMap
     const QString state = occ.value(QStringLiteral("state")).toString();
     out[QStringLiteral("repeatText")] = repeatTextFor(plan.value(QStringLiteral("rule")).toMap());
     out[QStringLiteral("snoozeRemaining")] = qMax(0, kMaxSnooze - snoozeCount);
-    out[QStringLiteral("canConfirm")] = state != QStringLiteral("confirmed");
+    const bool allowLate = planAllowsLate(plan);
+    // 过时 = 已经错过（窗口结束）。不允许过时完成的计划（如随餐药）错过后不能再补点完成。
+    const bool late = state == QStringLiteral("missed");
+    out[QStringLiteral("allowLate")] = allowLate;
+    out[QStringLiteral("isLate")] = late;
+    out[QStringLiteral("canConfirm")] = state != QStringLiteral("confirmed") && (allowLate || !late);
     out[QStringLiteral("canSnooze")] = state != QStringLiteral("confirmed")
         && snoozeCount < kMaxSnooze;
     return out;
@@ -615,6 +652,7 @@ QVariantList AppCore::occurrencesForDay(const QDate &day) const
             occ[QStringLiteral("windowMin")] = plan.value(QStringLiteral("windowMin"));
             occ[QStringLiteral("escalateAfterMin")] =
                 plan.value(QStringLiteral("escalateAfterMin"));
+            occ[QStringLiteral("allowLate")] = planAllowsLate(plan);
 
             occ = publicOccurrence(plan, occ);
             occ[QStringLiteral("canConfirm")] = false;
@@ -751,6 +789,15 @@ bool AppCore::confirm(qint64 occurrenceId, QString *error)
         if (error)
             *error = QStringLiteral("already_confirmed");
         return false;
+    }
+
+    if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("missed")) {
+        const int planIndex = indexOfPlan(occ.value(QStringLiteral("planId")).toLongLong());
+        if (planIndex >= 0 && !planAllowsLate(m_plans.at(planIndex).toMap())) {
+            if (error)
+                *error = QStringLiteral("late_not_allowed");
+            return false;
+        }
     }
 
     const QString title = occ.value(QStringLiteral("title")).toString();
@@ -961,6 +1008,7 @@ qint64 AppCore::createPlan(const QVariantMap &plan, QString *error)
         plan.value(QStringLiteral("windowMin"), kDefaultWindowMin).toInt();
     stored[QStringLiteral("escalateAfterMin")] =
         plan.value(QStringLiteral("escalateAfterMin"), kDefaultEscalateMin).toInt();
+    stored[QStringLiteral("allowLate")] = plan.value(QStringLiteral("allowLate"), true).toBool();
     stored[QStringLiteral("version")] = 1;
     stored[QStringLiteral("deleted")] = false;
     m_plans.append(stored);
@@ -979,21 +1027,140 @@ qint64 AppCore::createPlan(const QVariantMap &plan, QString *error)
 bool AppCore::updatePlan(qint64 planId, const QVariantMap &plan, QString *error)
 {
     const int index = indexOfPlan(planId);
-    if (index < 0) {
+    if (index < 0 || m_plans.at(index).toMap().value(QStringLiteral("deleted")).toBool()) {
+        if (error)
+            *error = QStringLiteral("plan_not_found");
+        return false;
+    }
+    if (plan.contains(QStringLiteral("title"))
+        && plan.value(QStringLiteral("title")).toString().trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("empty_title");
+        return false;
+    }
+    if (plan.contains(QStringLiteral("rule"))) {
+        const QVariantMap rule = plan.value(QStringLiteral("rule")).toMap();
+        const QString kind = normalizeKind(rule);
+        if (kind.isEmpty()) {
+            if (error)
+                *error = QStringLiteral("bad_rule_kind");
+            return false;
+        }
+        if (kind != QStringLiteral("once") && kind != QStringLiteral("meal_offset")
+            && rule.value(QStringLiteral("times")).toStringList().isEmpty()) {
+            if (error)
+                *error = QStringLiteral("empty_times");
+            return false;
+        }
+        if (kind == QStringLiteral("weekly")
+            && rule.value(QStringLiteral("weekdays")).toList().isEmpty()) {
+            if (error)
+                *error = QStringLiteral("empty_weekdays");
+            return false;
+        }
+    }
+
+    QVariantMap stored = m_plans.at(index).toMap();
+    for (auto it = plan.constBegin(); it != plan.constEnd(); ++it) {
+        // 身份与删除标记只能由各自的命令改，补丁里的同名键忽略。
+        if (it.key() == QStringLiteral("planId") || it.key() == QStringLiteral("deleted")
+            || it.key() == QStringLiteral("version"))
+            continue;
+        stored.insert(it.key(), it.value());
+    }
+    stored[QStringLiteral("planId")] = planId;
+    stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
+    m_plans[index] = stored;
+
+    // 记下这条计划今天每个 occurrence 原来的时间；改了时间的未完成项重新从"待提醒"开始，
+    // 已经确认的保持确认（今天的进度不丢）。
+    QHash<qint64, qint64> oldDue;
+    for (const QVariant &entry : std::as_const(m_occurrences)) {
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("planId")).toLongLong() == planId)
+            oldDue.insert(occ.value(QStringLiteral("occurrenceId")).toLongLong(),
+                          occ.value(QStringLiteral("dueTs")).toLongLong());
+    }
+
+    m_day = QDate::currentDate();
+    rebuildToday();
+
+    for (int i = 0; i < m_occurrences.size(); ++i) {
+        QVariantMap occ = m_occurrences.at(i).toMap();
+        const qint64 id = occ.value(QStringLiteral("occurrenceId")).toLongLong();
+        const auto it = oldDue.constFind(id);
+        if (it == oldDue.constEnd() || *it == occ.value(QStringLiteral("dueTs")).toLongLong())
+            continue;
+        if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("confirmed"))
+            continue;
+        occ[QStringLiteral("state")] = QStringLiteral("pending");
+        occ[QStringLiteral("snoozeCount")] = 0;
+        occ[QStringLiteral("snoozeUntilTs")] = 0;
+        m_occurrences[i] = occ;
+    }
+
+    emit occurrencesChanged();
+    emit currentChanged();
+    emit plansChanged();
+    return true;
+}
+
+bool AppCore::skipToday(qint64 planId, QString *error)
+{
+    const int index = indexOfPlan(planId);
+    if (index < 0 || m_plans.at(index).toMap().value(QStringLiteral("deleted")).toBool()) {
+        if (error)
+            *error = QStringLiteral("plan_not_found");
+        return false;
+    }
+    m_day = QDate::currentDate();
+    QVariantList stash;
+    for (const QVariant &entry : std::as_const(m_occurrences)) {
+        if (entry.toMap().value(QStringLiteral("planId")).toLongLong() == planId)
+            stash.append(entry);
+    }
+    if (stash.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("nothing_today");
+        return false;
+    }
+
+    QVariantMap stored = m_plans.at(index).toMap();
+    QStringList skip = stored.value(QStringLiteral("skipDates")).toStringList();
+    const QString today = m_day.toString(Qt::ISODate);
+    if (!skip.contains(today))
+        skip.append(today);
+    stored[QStringLiteral("skipDates")] = skip;
+    stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
+    m_plans[index] = stored;
+
+    m_skippedOccurrences.insert(planId, stash);
+    rebuildToday();
+    emit plansChanged();
+    return true;
+}
+
+bool AppCore::unskipToday(qint64 planId, QString *error)
+{
+    const int index = indexOfPlan(planId);
+    m_day = QDate::currentDate();
+    const QString today = m_day.toString(Qt::ISODate);
+    if (index < 0
+        || !m_plans.at(index).toMap().value(QStringLiteral("skipDates")).toStringList().contains(today)) {
         if (error)
             *error = QStringLiteral("plan_not_found");
         return false;
     }
     QVariantMap stored = m_plans.at(index).toMap();
-    for (auto it = plan.constBegin(); it != plan.constEnd(); ++it)
-        stored.insert(it.key(), it.value());
-    stored[QStringLiteral("planId")] = planId;
+    QStringList skip = stored.value(QStringLiteral("skipDates")).toStringList();
+    skip.removeAll(today);
+    stored[QStringLiteral("skipDates")] = skip;
     stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
     m_plans[index] = stored;
 
-    m_day = QDate::currentDate();
-    rebuildToday();
+    rebuildTodayFrom(m_occurrences + m_skippedOccurrences.take(planId));
     emit plansChanged();
+    emit toast(QStringLiteral("已恢复今天的：%1").arg(stored.value(QStringLiteral("title")).toString()));
     return true;
 }
 

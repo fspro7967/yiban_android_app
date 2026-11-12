@@ -93,7 +93,7 @@ Rectangle {
         if (!enabled)
             return
         var t = Date.now()
-        if (t - _lastActivated < 400)
+        if (Fmt.tooSoon(_lastActivated, t, 400))
             return
         _lastActivated = t
         clicked()
