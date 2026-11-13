@@ -252,25 +252,51 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
 
 ## 已知边界
 
-- 锁屏可见 / 锁屏全屏提醒需要 Android 前台服务 + `full-screen intent`，QML 层无法单独完成；
-  当前实现是应用内全屏。
+- 锁屏/灭屏的到点提醒走 **系统精确闹钟 + full-screen intent**（`android/src/com/yiban/elder/`）：
+  到点由 `AlarmReceiver` 弹全屏通知，锁屏也会亮屏并把应用顶上来；`BootReceiver` 负责关机重启后重建闹钟。
+  没有引入前台服务——精确闹钟已经够用，常驻通知对老人是噪音。细节见
+  [`agent/B2-交付说明.md`](agent/B2-交付说明.md)。
 - 无 TalkBack 读屏支持：Qt QML 的无障碍树在 Android 上能力有限；本设计以大字、高对比、
   语音播报为主要补偿手段。
 - 真实数据与演示数据都只存在内存；演示数据由 `AppCore::seedDemo()` 预置，启动时只生成演示快照，
   真实数据域默认为空。切换演示模式只在两个内存快照间切换，不会互相覆盖；重启应用后都恢复默认。
-  设置项（字号、语音开关）、管理后台里改的紧急联系人和服务器地址也只保存在内存，
-  重启后恢复默认值；真实版需要 SQLite / 后端 profile / 设备配置接口。
+  设备级设置（语音开关、夜间安静、服务器地址、配对 token）已用 `QSettings` 落盘
+  （`src/comm/app_settings.cpp`），重启后保持；字号档位仍只在内存里，属 QML 侧状态。
+  管理后台改的紧急联系人仍只改内存，等后端 profile 接口。
 - 语音依赖设备 TTS 引擎；`AndroidManifest.xml` 已加 Android 11+ 的 `TTS_SERVICE` 查询声明。
 - 新建页面向老人只暴露“每天 / 每周 / 每月 / 仅一次”四种常用重复（对应规则 JSON 见规范 §6）；
   interval / course / meal_offset 不进端上，更适合放到照护者端或后续“高级选项”。
 - 应用为竖屏锁定；若后续要做平板/横屏，需要重新排 2×2 入口与统计图。
 - “特大字号”下部分页面（首页、设置、表单）需要上下滑动才能看到全部内容；这是为了保证字号不缩小、不裁切而做的取舍。默认“大字号”下首页四个入口和 SOS 仍在一屏内。
 
+## Android 系统集成
+
+所有系统能力都收在两个地方，其余代码一律不碰 Android API：
+
+- `src/platform/platform.{h,cpp}`：C++ 侧唯一入口（桌面构建是安全空实现，PC 上照常跑）；
+- `android/src/com/yiban/elder/*.java`：`YibanPlatform`（权限/通知/闹钟/拨号/短信/屏幕固定）、
+  `AlarmStore`（闹钟影子记录）、`AlarmReceiver`（到点弹全屏通知）、`BootReceiver`（开机重建）。
+
+| 能力 | 实现 | 需要用户授权 |
+| --- | --- | --- |
+| 到点提醒（应用内） | QML `ReminderScreen` | 否 |
+| 到点提醒（锁屏/后台/进程被杀） | `AlarmManager.setAlarmClock` + 全屏通知 | 通知、闹钟和提醒 |
+| 关机重启后继续提醒 | `BOOT_COMPLETED` → 按影子记录重排 | 否 |
+| 紧急呼救 | `ACTION_CALL` 拨号，失败降级短信，再失败提示播 120 | 电话/短信 |
+| 老人机模式 | `startLockTask()`（无设备管理员时是系统“屏幕固定”） | 否 |
+| 语音播报 | `QTextToSpeech`（系统 TTS），夜间安静只静音“到点自动播报” | 否 |
+
+首次启动会申请通知权限；配对成功后依次申请电话、短信权限（错开 1 秒，系统一次只处理一个弹窗）。
+精确闹钟权限被拒时自动退化成非精确闹钟（可能晚几分钟），并在设置页提示去打开。
+
+
 ## 验证
 
 - `qmllint -s qml/*.qml`：无语法错误（facade 单例的误报见“运行”一节说明）。
 - `tests/tst_app_core`：16 例全绿（状态机、ID 编码、错误码、事件去重、演示/真实数据域隔离）；
   `CTest` 集成，`BUILD_TESTING=ON`（默认）即可跑。
+- `tests/tst_platform`：4 例，锁两件事——平台层在桌面构建下必须是安全空实现（不能把 PC 跑崩），
+  以及 `QSettings` 里的设置/`device_id` 能跨“重启”保持。
 - 桌面 `build-desktop` 编译通过，离屏启动无 QML 运行时错误。
 - Android `build` 的 `apk` 目标构建通过，产物 `build/android-build/yiban_android_app.apk`。
 - 14 张页面截图 412×915，由开发构建的截图钩子生成（`YIBAN_DEV_SHOTS=ON`，

@@ -1,14 +1,22 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QStringList>
+#include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
 class QTextToSpeech;
 class QTimer;
+class HttpClient;
 
-// 设备 facade（B2 实现）：配对、TTS、勿扰、Kiosk、SOS。
-// voiceEnabled / nightQuiet 是用户设置，持久化由 B2 负责。
+// 设备 facade（B2 实现）：配对、TTS、权限、通知/闹钟、Kiosk、SOS。
+//
+// 分工口径（agent/三人组前后端分工.md §2.5）：
+//   * 本类只"执行"系统动作：发通知、定闹钟、拨号、改静音状态；
+//   * 不判业务状态——哪条提醒该响由 AppCore 的状态机决定，
+//     本类只订阅 AppCore::reminderDue 去呈现；
+//   * QML 只读属性、只调 Q_INVOKABLE，不接触 Android API。
 class DeviceVM : public QObject
 {
     Q_OBJECT
@@ -51,19 +59,23 @@ public:
     bool demoMode() const;
     void setDemoMode(bool on);
 
-    // 管理后台：保存服务器地址（演示版只保存在内存）。
+    // 管理后台：保存服务器地址，并落盘（重启后仍然生效）。
     Q_INVOKABLE bool saveNetwork(const QString &serverUrl);
 
     Q_INVOKABLE void pair(const QString &code, const QString &role);
     Q_INVOKABLE void unpair();
     // tag 以 "manual" 开头表示用户主动点的（再听一遍、读给我听），夜间安静不拦；
-    // 其余（到点自动播报、呼救）在安静时段一律不出声。
+    // "sos" 是呼救播报，任何时段都必须出声；其余（到点播报）在安静时段一律不出声。
     Q_INVOKABLE void speak(const QString &text, const QString &tag);
     Q_INVOKABLE void stopSpeaking();
     Q_INVOKABLE void sos(int level);
     Q_INVOKABLE void enterKiosk();
     Q_INVOKABLE void exitKiosk();
     Q_INVOKABLE void resetDemo(); // 仅演示用
+
+    // 设置页"检查权限"入口用；桌面构建是空操作
+    Q_INVOKABLE void requestNotificationPermission();
+    Q_INVOKABLE void requestExactAlarmPermission();
 
 signals:
     void pairingChanged();
@@ -78,16 +90,30 @@ signals:
     void toast(const QString &text);
 
 private:
-    void checkQuietWindow();
+    void tick();                 // 2s：夜间窗口 / 权限 / 联网状态
+    void refreshPermissions();
+    void refreshNetwork();
+    void rescheduleAlarms();     // 按今天的 occurrence 重排精确闹钟
+    void onReminderDue(const QVariantMap &occurrence);
+    void handlePairReply(quint64 requestId, int status, const QJsonObject &body);
+    void handlePairFailed(quint64 requestId, const QString &code);
+    void finishPair(bool ok, const QString &role, const QString &reason);
 
     QTextToSpeech *m_tts = nullptr;
-    QTimer *m_quietTimer = nullptr;
+    QTimer *m_tickTimer = nullptr;
+    HttpClient *m_http = nullptr;
+
+    QStringList m_permissionCache;
+    quint64 m_pairRequestId = 0;
+
     bool m_quietActive = false;
-    QString m_role = QStringLiteral("elder");
     bool m_paired = false;
+    bool m_pairing = false;
     bool m_kioskActive = false;
     bool m_voiceEnabled = true;
     bool m_nightQuiet = true;
+    bool m_warnedExactAlarm = false;
+    QString m_role = QStringLiteral("elder");
     QString m_serverUrl = QStringLiteral("https://api.yiban.example/v1");
     QString m_wifiName = QStringLiteral("Home-2.4G");
     bool m_networkOnline = true;
