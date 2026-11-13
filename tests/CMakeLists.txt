@@ -22,3 +22,21 @@ target_link_libraries(tst_app_core PRIVATE Qt6::Core Qt6::Qml Qt6::Test)
 
 add_test(NAME facade_app_core COMMAND tst_app_core)
 set_tests_properties(facade_app_core PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# B2：平台层与设置持久化。桌面构建下平台层必须是安全空实现，
+# 这条用例就是防止某次改动把它变成"在 PC 上直接崩"。
+qt_add_executable(tst_platform
+    tst_platform.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/app_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/app_settings.h
+    ${CMAKE_SOURCE_DIR}/src/platform/platform.cpp
+    ${CMAKE_SOURCE_DIR}/src/platform/platform.h
+)
+
+target_include_directories(tst_platform PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/comm
+    ${CMAKE_SOURCE_DIR}/src/platform
+)
+target_link_libraries(tst_platform PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME platform_bridge COMMAND tst_platform)

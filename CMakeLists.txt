@@ -114,8 +114,12 @@ set(VM_SOURCES
         src/vm/profile_vm.h
         src/vm/profile_vm.cpp
         src/vm/facade_errors.h
+        src/comm/app_settings.h
+        src/comm/app_settings.cpp
         src/comm/http_client.h
         src/comm/http_client.cpp
+        src/platform/platform.h
+        src/platform/platform.cpp
 )
 
 set(PROJECT_SOURCES
@@ -192,6 +196,7 @@ endif()
 target_include_directories(yiban_android_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vm
     ${CMAKE_CURRENT_SOURCE_DIR}/src/comm
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform
 )
 
 target_link_libraries(yiban_android_app PRIVATE
