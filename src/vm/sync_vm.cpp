@@ -28,6 +28,9 @@ int SyncVM::pendingCount() const
 
 void SyncVM::retrySync()
 {
+    AppCore::instance()->logOperation(
+        QStringLiteral("管理"),
+        QStringLiteral("手动同步：当前离线，%1 条记录待上传").arg(pendingCount()));
     emit commandRejected(QStringLiteral("offline"),
                          facadeErrorText(QStringLiteral("offline")));
 }

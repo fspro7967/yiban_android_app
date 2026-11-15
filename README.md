@@ -21,7 +21,7 @@ PlanVM / RecordVM / SyncVM / DeviceVM / ProfileVM）的方法、只读它们的�
 | 统计 | 近 7 天 / 近 30 天；完成率、连续天数、漏做次数、Canvas 柱状图、语音播报总结 |
 | 设置 | 三档字号、语音播报、夜间安静、演示模式开关、家人电话、配对状态、看护人后台入口、演示工具 |
 | 看护人验证 | 必须照抄“我是看护人”五个字；60 秒未完成自动回主界面；上下两个退出键 |
-| 管理后台 | 修改紧急联系人、服务器地址、查看同步状态；仅验证成功后进入 |
+| 管理后台 | 修改紧急联系人、服务器地址、查看同步状态和操作日志；仅验证成功后进入 |
 | 全屏提醒 | 深锈红渐变、大时间、药名/剂量/备注、2 分钟后通知家人、112dp 确认按钮、稍后 10 分钟、再听一遍 |
 | 紧急呼救 | 首页长按 3 秒 → 5 秒倒计时可取消 → 已通知家人 |
 
@@ -69,8 +69,9 @@ cmake --build build-desktop -j6
 ```bash
 cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH=/opt/Qt/6.11.1/gcc_64 -DBUILD_TESTING=ON
-cmake --build build-verify --target tst_app_core -j6
+cmake --build build-verify --target tst_app_core tst_connection_probe -j6
 QT_QPA_PLATFORM=offscreen ./build-verify/tests/tst_app_core
+QT_QPA_PLATFORM=offscreen ./build-verify/tests/tst_connection_probe
 ```
 
 Android APK（Qt 6.11.1 Android arm64 kit，需 SDK/NDK 与 JDK）：
@@ -196,7 +197,7 @@ qml/
   StatsPage.qml         7/30 天统计
   SettingsPage.qml      设置与演示工具
   CaregiverGatePage.qml 看护人验证缓冲页（60 秒超时）
-  AdminPage.qml         看护人管理后台（联系人、网络、同步）
+  AdminPage.qml         看护人管理后台（联系人、网络、同步、操作日志）
   ReminderScreen.qml    全屏到点提醒
   CallScreen.qml        呼救倒计时
   SosButton.qml         长按 3 秒 SOS
@@ -209,12 +210,15 @@ src/vm/
   sync_vm.*             SyncVM：syncState/lastSyncTs/pendingCount/retrySync
   device_vm.*           DeviceVM：pair/speak/sos/enterKiosk/TTS
   profile_vm.*          ProfileVM：老人与家人档案
+  log_vm.*              LogVM：操作日志 entries/count/note/clear（管理后台用）
   app_core.*            端上数据核心（demo 内存实现，B1 换 SQLite + 状态机）
   facade_errors.h       错误码 → 中文文案
 src/comm/
   http_client.*         唯一 HTTP 落点（当前只有离线实现，B2 补真实客户端）
+  connection_probe.*    管理后台“测试连接”：对服务器地址真发一次请求
 tests/
-  tst_app_core.cpp      facade 契约单测（15 例）
+  tst_app_core.cpp      facade 契约单测（24 例）
+  tst_connection_probe.cpp  测试连接的探测逻辑（本机假服务器，不需要外网）
 docs/
   端上接口规范_v1.1.md   ★ 冻结的接口/形状/状态机/错误码
   后端交接清单.md       给 B1/B2 的逐文件落点与顺序

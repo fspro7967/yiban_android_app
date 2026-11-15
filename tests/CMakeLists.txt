@@ -22,3 +22,18 @@ target_link_libraries(tst_app_core PRIVATE Qt6::Core Qt6::Qml Qt6::Test)
 
 add_test(NAME facade_app_core COMMAND tst_app_core)
 set_tests_properties(facade_app_core PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# 管理后台"测试连接"的探测逻辑：用本机假服务器覆盖各种应答，不需要外网。
+find_package(Qt6 REQUIRED COMPONENTS Network)
+
+qt_add_executable(tst_connection_probe
+    tst_connection_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/connection_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/connection_probe.h
+)
+
+target_include_directories(tst_connection_probe PRIVATE ${CMAKE_SOURCE_DIR}/src/comm)
+target_link_libraries(tst_connection_probe PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+
+add_test(NAME connection_probe COMMAND tst_connection_probe)
+set_tests_properties(connection_probe PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

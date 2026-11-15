@@ -38,6 +38,14 @@ public:
     QVariantList eventLog() const;
     QString eventLogCsv() const;
 
+    // ---- 操作日志（管理后台查看；和上面的同步事件队列是两回事）----
+    // 每项 {seq, ts, category, text}，新的在前。只留最近 kMaxOperationLog 条，
+    // 不分真实/演示数据域：切换数据域本身也是一条操作。
+    QVariantList operationLog() const;
+    int operationLogSize() const { return m_opLog.size(); }
+    void logOperation(const QString &category, const QString &text);
+    void clearOperationLog();
+
     int todayDone() const;
     int todayTotal() const;
     int pendingCount() const;
@@ -98,6 +106,7 @@ signals:
     void nowChanged();
     void reminderDue(const QVariantMap &occurrence);
     void demoModeChanged();
+    void operationLogChanged();
     void toast(const QString &text);
 
 private slots:
@@ -151,6 +160,8 @@ private:
     QVariantList m_occurrences;
     QVariantList m_records;
     QVariantList m_events;
+    QVariantList m_opLog; // 旧的在前；对外输出时倒过来
+    qint64 m_nextOpSeq = 1;
 
     QTimer m_tick;
     QDate m_day;

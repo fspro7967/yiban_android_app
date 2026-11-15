@@ -23,6 +23,7 @@ Item {
         if (input.text.trim() === "我是看护人") {
             page.finish(true)
         } else {
+            LogVM.note("管理", "看护人验证没有通过")
             page.errorText = "输入不对，请照着上面的五个字再输一次"
             input.selectAll()
             input.forceActiveFocus()

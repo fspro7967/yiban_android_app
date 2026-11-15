@@ -60,6 +60,8 @@ private slots:
     void skipTodayKeepsPlanAndUndoRestoresProgress();
     void caregiverPhoneValidation();
     void strictPlanExpiredWhileAwayIsNotFired();
+    void operationLogRecordsEveryAction();
+    void operationLogIsCappedAndClearable();
 
 private:
     // 建一条 5~30 分钟之后的 daily 计划，返回 planId；临近午夜返回 0（调用方 QSKIP）。
@@ -725,6 +727,74 @@ void FacadeCoreTest::strictPlanExpiredWhileAwayIsNotFired()
         if (event.value(QStringLiteral("occurrenceId")).toLongLong() == strictOcc)
             QVERIFY(event.value(QStringLiteral("action")).toString() != QStringLiteral("fire"));
     }
+}
+
+void FacadeCoreTest::operationLogRecordsEveryAction()
+{
+    AppCore *core = AppCore::instance();
+    core->clearOperationLog();
+    QSignalSpy changed(core, &AppCore::operationLogChanged);
+
+    const qint64 planId = createPlanAhead(15);
+    if (planId == 0)
+        QSKIP("临近午夜，今天不会产生 occurrence");
+    const qint64 occ = occurrenceForPlan(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+
+    const int syncEvents = core->eventLog().size();
+    QVERIFY(core->confirm(occ));
+    QVERIFY(!core->confirm(occ)); // 被拒绝的命令不记日志
+    QVERIFY(core->undoOccurrence(occ));
+    const qint64 recordId = core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    QVERIFY(core->removeRecord(recordId));
+    QVERIFY(core->deletePlan(planId));
+    QVERIFY(core->restorePlan(planId));
+
+    // 操作日志不占同步队列：只有确认、撤销这两条是要上传的事件。
+    QCOMPARE(core->eventLog().size(), syncEvents + 2);
+
+    const QVariantList log = core->operationLog();
+    QCOMPARE(log.size(), 8); // 清空留痕 + 上面 7 步
+    QCOMPARE(changed.count(), 7);
+
+    // 新的在前，seq 严格递减，四个键齐全。
+    const QStringList expected = {
+        QStringLiteral("撤销删除"), QStringLiteral("删除提醒"), QStringLiteral("撤销记录"),
+        QStringLiteral("记下"),     QStringLiteral("撤销，"),   QStringLiteral("确认完成"),
+        QStringLiteral("新增提醒"), QStringLiteral("清空了操作日志"),
+    };
+    qint64 previousSeq = LLONG_MAX;
+    for (int i = 0; i < log.size(); ++i) {
+        const QVariantMap entry = log.at(i).toMap();
+        QVERIFY(entry.value(QStringLiteral("seq")).toLongLong() < previousSeq);
+        previousSeq = entry.value(QStringLiteral("seq")).toLongLong();
+        QVERIFY(entry.value(QStringLiteral("ts")).toLongLong() > 0);
+        QVERIFY(!entry.value(QStringLiteral("category")).toString().isEmpty());
+        const QString text = entry.value(QStringLiteral("text")).toString();
+        QVERIFY2(text.startsWith(expected.at(i)), qPrintable(text));
+    }
+    QVERIFY(log.at(5).toMap().value(QStringLiteral("text")).toString().contains(QStringLiteral("测试提醒")));
+}
+
+void FacadeCoreTest::operationLogIsCappedAndClearable()
+{
+    AppCore *core = AppCore::instance();
+    for (int i = 0; i < 250; ++i)
+        core->logOperation(QStringLiteral("管理"), QStringLiteral("第 %1 条").arg(i));
+    QCOMPARE(core->operationLog().size(), 200);
+    QCOMPARE(core->operationLog().first().toMap().value(QStringLiteral("text")).toString(),
+             QStringLiteral("第 249 条"));
+
+    core->logOperation(QStringLiteral("管理"), QStringLiteral("   ")); // 空内容不记
+    QCOMPARE(core->operationLog().size(), 200);
+
+    // 切换数据域不换日志：它记的是这台设备上的操作，切换本身也是一条。
+    core->setDemoMode(false);
+    QCOMPARE(core->operationLog().first().toMap().value(QStringLiteral("text")).toString(),
+             QStringLiteral("切换到真实数据"));
+    core->setDemoMode(true);
+
+    core->clearOperationLog();
+    QCOMPARE(core->operationLog().size(), 1);
 }
 
 QTEST_GUILESS_MAIN(FacadeCoreTest)

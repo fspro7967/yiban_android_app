@@ -33,6 +33,7 @@ Item {
             return
         countdown.stop()
         active = false
+        LogVM.note("呼救", "取消了紧急呼救")
         Notify.info("已取消呼救")
         closed()
     }

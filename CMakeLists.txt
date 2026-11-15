@@ -113,9 +113,13 @@ set(VM_SOURCES
         src/vm/device_vm.cpp
         src/vm/profile_vm.h
         src/vm/profile_vm.cpp
+        src/vm/log_vm.h
+        src/vm/log_vm.cpp
         src/vm/facade_errors.h
         src/comm/http_client.h
         src/comm/http_client.cpp
+        src/comm/connection_probe.h
+        src/comm/connection_probe.cpp
 )
 
 set(PROJECT_SOURCES
@@ -202,6 +206,13 @@ target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Sql
 )
+
+# Android 上 Qt 的 TLS 后端要在运行时加载 libssl_3.so / libcrypto_3.so，APK 里不带就连不了 https
+#（管理后台"测试连接"和以后的云端同步都会报 TLS initialization failed）。
+if(ANDROID)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/android_openssl/android_openssl.cmake)
+    add_android_openssl_libraries(yiban_android_app)
+endif()
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an

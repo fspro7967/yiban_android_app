@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QtQml/qqmlregistration.h>
 
+class ConnectionProbe;
 class QTextToSpeech;
 class QTimer;
 
@@ -26,9 +27,15 @@ class DeviceVM : public QObject
     // 夜间安静此刻是否生效（开关打开且处于 22:00–07:00），设置页和提醒页据此提示。
     Q_PROPERTY(bool nightQuietActive READ nightQuietNow NOTIFY voiceChanged)
     Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY networkChanged)
-    Q_PROPERTY(QString wifiName READ wifiName NOTIFY networkChanged)
+    // 手机当前的联网状态，读自系统（QNetworkInformation），不是服务器是否可达——那个看 testConnection。
+    //   networkStatus: online（能上外网）/ limited（连着网但只到局域网）/ portal（要网页登录的 Wi-Fi）
+    //                  / offline（没联网）/ unknown（这台设备读不到）
+    //   networkType:   Wi-Fi / 移动数据 / 有线网络 / 蓝牙，读不到为空串
+    Q_PROPERTY(QString networkStatus READ networkStatus NOTIFY networkChanged)
+    Q_PROPERTY(QString networkType READ networkType NOTIFY networkChanged)
     Q_PROPERTY(bool networkOnline READ networkOnline NOTIFY networkChanged)
     Q_PROPERTY(bool demoMode READ demoMode WRITE setDemoMode NOTIFY demoModeChanged)
+    Q_PROPERTY(bool testingConnection READ testingConnection NOTIFY testingConnectionChanged)
 
 public:
     explicit DeviceVM(QObject *parent = nullptr);
@@ -46,13 +53,18 @@ public:
     bool nightQuietNow() const;
 
     QString serverUrl() const { return m_serverUrl; }
-    QString wifiName() const { return m_wifiName; }
-    bool networkOnline() const { return m_networkOnline; }
+    QString networkStatus() const;
+    QString networkType() const;
+    bool networkOnline() const { return networkStatus() == QStringLiteral("online"); }
     bool demoMode() const;
     void setDemoMode(bool on);
 
     // 管理后台：保存服务器地址（演示版只保存在内存）。
     Q_INVOKABLE bool saveNetwork(const QString &serverUrl);
+    // 管理后台：对这个地址真发一次请求看能不能连上（不要求先保存）。
+    // 异步，结果走 connectionTested；地址不合法时也从 connectionTested 回来。
+    Q_INVOKABLE void testConnection(const QString &serverUrl);
+    bool testingConnection() const;
 
     Q_INVOKABLE void pair(const QString &code, const QString &role);
     Q_INVOKABLE void unpair();
@@ -73,6 +85,8 @@ signals:
     void voiceChanged();
     void networkChanged();
     void demoModeChanged();
+    void testingConnectionChanged();
+    void connectionTested(bool ok, const QString &message);
     void sosTriggered(int level);
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
@@ -82,6 +96,8 @@ private:
 
     QTextToSpeech *m_tts = nullptr;
     QTimer *m_quietTimer = nullptr;
+    ConnectionProbe *m_probe = nullptr;
+    QString m_probeUrl;
     bool m_quietActive = false;
     QString m_role = QStringLiteral("elder");
     bool m_paired = false;
@@ -89,6 +105,5 @@ private:
     bool m_voiceEnabled = true;
     bool m_nightQuiet = true;
     QString m_serverUrl = QStringLiteral("https://api.yiban.example/v1");
-    QString m_wifiName = QStringLiteral("Home-2.4G");
-    bool m_networkOnline = true;
+    bool m_networkInfoReady = false; // 系统联网状态后端是否加载成功
 };

@@ -5,6 +5,7 @@
 
 #ifdef YIBAN_DEV_SHOTS
 #include <QImage>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QTimer>
 #endif
@@ -38,6 +39,15 @@ int main(int argc, char *argv[])
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         const int delay = qEnvironmentVariableIntValue("YIBAN_SHOT_DELAY");
         if (window) {
+            // 仅截图回归：YIBAN_WIDTH / YIBAN_HEIGHT 模拟窄屏手机，YIBAN_SCALE=0/1/2 切字号档位。
+            if (const int w = qEnvironmentVariableIntValue("YIBAN_WIDTH"); w > 0)
+                window->setWidth(w);
+            if (const int h = qEnvironmentVariableIntValue("YIBAN_HEIGHT"); h > 0)
+                window->setHeight(h);
+            if (qEnvironmentVariableIsSet("YIBAN_SCALE")) {
+                if (auto *theme = window->property("theme").value<QObject *>())
+                    theme->setProperty("scaleLevel", qEnvironmentVariableIntValue("YIBAN_SCALE"));
+            }
             if (qEnvironmentVariableIsSet("YIBAN_DEMO")) {
                 if (auto *device = engine.singletonInstance<QObject *>(
                         QStringLiteral("SmartGlasses"), QStringLiteral("DeviceVM"))) {
@@ -129,6 +139,28 @@ int main(int argc, char *argv[])
                         return;
                     field->setProperty("text", QString::fromLocal8Bit(phone));
                     QMetaObject::invokeMethod(admin, "saveContact");
+                });
+            }
+            if (const QByteArray probe = qgetenv("YIBAN_ADMIN_PROBE"); !probe.isEmpty()) {
+                // 仅截图回归：在管理后台填一个服务器地址并点"测试连接"，检查结果提示。
+                QTimer::singleShot(900, window, [window, &engine, probe] {
+                    auto *field = window->findChild<QObject *>(QStringLiteral("serverUrl"));
+                    auto *device = engine.singletonInstance<QObject *>(
+                        QStringLiteral("SmartGlasses"), QStringLiteral("DeviceVM"));
+                    if (!field || !device)
+                        return;
+                    field->setProperty("text", QString::fromLocal8Bit(probe));
+                    // 把网络卡片滚到屏幕里（YIBAN_SCROLL_END 时不动，留给操作日志）。
+                    auto *scroll = qobject_cast<QQuickItem *>(
+                        window->findChild<QObject *>(QStringLiteral("adminScroll")));
+                    auto *fieldItem = qobject_cast<QQuickItem *>(field);
+                    if (scroll && fieldItem && !qEnvironmentVariableIsSet("YIBAN_SCROLL_END")) {
+                        if (auto *content = scroll->property("contentItem").value<QQuickItem *>())
+                            scroll->setProperty("contentY",
+                                                fieldItem->mapToItem(content, QPointF(0, 0)).y() - 80);
+                    }
+                    QMetaObject::invokeMethod(device, "testConnection",
+                                              Q_ARG(QString, QString::fromLocal8Bit(probe)));
                 });
             }
             const QByteArray overlay = qgetenv("YIBAN_SHOT_OVERLAY");

@@ -17,6 +17,7 @@ constexpr qint64 kSnoozeMinutes = 10;
 constexpr int kMaxSnooze = 3;
 constexpr int kDefaultWindowMin = 30;
 constexpr int kDefaultEscalateMin = 15;
+constexpr int kMaxOperationLog = 200;
 
 // event_id 的命名空间固定，保证同样的 (occurrence, action, ts) 只会产生一个 id。
 const QUuid kEventNamespace(QStringLiteral("{7b0f7d3e-3c2a-4a55-9f0e-6b1a2c8d4e11}"));
@@ -82,6 +83,32 @@ QString normalizeKind(const QVariantMap &rule)
         QStringLiteral("once"),
     };
     return known.contains(kind) ? kind : QString();
+}
+
+// 操作日志里的称呼："08:00 吃降压药" / "「吃降压药」" / "喝水 1 杯"。
+QString occurrenceLabel(const QVariantMap &occ)
+{
+    return QStringLiteral("%1 %2").arg(hhmmFromMs(occ.value(QStringLiteral("dueTs")).toLongLong()),
+                                       occ.value(QStringLiteral("title")).toString());
+}
+
+QString planLabel(const QVariantMap &plan)
+{
+    return QStringLiteral("「%1」").arg(plan.value(QStringLiteral("title")).toString().trimmed());
+}
+
+QString recordLabel(const QString &type, double value, const QString &unit)
+{
+    const QString amount = QString::number(value) + (unit.isEmpty() ? QString() : QLatin1Char(' ') + unit);
+    if (type == QStringLiteral("water"))
+        return QStringLiteral("喝水 %1").arg(amount);
+    if (type == QStringLiteral("sleep_start"))
+        return QStringLiteral("入睡时间");
+    if (type == QStringLiteral("sleep_end"))
+        return QStringLiteral("起床时间");
+    if (type == QStringLiteral("activity"))
+        return QStringLiteral("活动 %1").arg(amount);
+    return QStringLiteral("%1 %2").arg(type, amount);
 }
 
 bool planAllowsLate(const QVariantMap &plan)
@@ -316,6 +343,8 @@ void AppCore::setDemoMode(bool on)
     m_nowMs = QDateTime::currentMSecsSinceEpoch();
     applySnapshot(on ? m_demoData : m_realData);
 
+    logOperation(QStringLiteral("设置"),
+                 on ? QStringLiteral("切换到演示数据") : QStringLiteral("切换到真实数据"));
     emit demoModeChanged();
 }
 
@@ -325,6 +354,8 @@ void AppCore::setProfile(const QString &elderName, const QString &caregiverName,
     m_elderName = elderName;
     m_caregiverName = caregiverName;
     m_caregiverPhone = caregiverPhone;
+    logOperation(QStringLiteral("设置"),
+                 QStringLiteral("保存紧急联系人：%1 %2").arg(caregiverName, caregiverPhone));
     emit profileChanged();
 }
 
@@ -401,6 +432,7 @@ void AppCore::onTick()
         occ[QStringLiteral("state")] = QStringLiteral("missed");
         m_occurrences[index] = occ;
         appendEvent(id, QStringLiteral("miss"), QStringLiteral("window_expired"));
+        logOperation(QStringLiteral("提醒"), QStringLiteral("过时未确认：%1").arg(occurrenceLabel(occ)));
         changed = true;
     }
 
@@ -750,6 +782,7 @@ void AppCore::fireDue(qint64 occurrenceId)
     occ[QStringLiteral("snoozeUntilTs")] = 0;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("fire"), QString());
+    logOperation(QStringLiteral("提醒"), QStringLiteral("到点提醒：%1").arg(occurrenceLabel(occ)));
 
     const int planIndex = indexOfPlan(occ.value(QStringLiteral("planId")).toLongLong());
     if (planIndex >= 0)
@@ -774,6 +807,39 @@ void AppCore::appendEvent(qint64 occurrenceId, const QString &action, const QStr
     event[QStringLiteral("reason")] = reason;
     event[QStringLiteral("serverSeq")] = 0;
     m_events.append(event);
+}
+
+QVariantList AppCore::operationLog() const
+{
+    QVariantList out;
+    out.reserve(m_opLog.size());
+    for (auto it = m_opLog.crbegin(); it != m_opLog.crend(); ++it)
+        out.append(*it);
+    return out;
+}
+
+void AppCore::logOperation(const QString &category, const QString &text)
+{
+    const QString line = text.trimmed();
+    if (line.isEmpty())
+        return;
+    QVariantMap entry;
+    entry[QStringLiteral("seq")] = m_nextOpSeq++;
+    // 用墙上时钟而不是 m_nowMs：后者一秒才走一格，同一秒内的操作要能分先后。
+    entry[QStringLiteral("ts")] = QDateTime::currentMSecsSinceEpoch();
+    entry[QStringLiteral("category")] = category.trimmed();
+    entry[QStringLiteral("text")] = line;
+    m_opLog.append(entry);
+    while (m_opLog.size() > kMaxOperationLog)
+        m_opLog.removeFirst();
+    emit operationLogChanged();
+}
+
+void AppCore::clearOperationLog()
+{
+    m_opLog.clear();
+    // 清空本身要留痕，否则看不出日志被人清过。
+    logOperation(QStringLiteral("管理"), QStringLiteral("清空了操作日志"));
 }
 
 bool AppCore::confirm(qint64 occurrenceId, QString *error)
@@ -806,6 +872,7 @@ bool AppCore::confirm(qint64 occurrenceId, QString *error)
     occ[QStringLiteral("snoozeUntilTs")] = 0;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("confirm"), QString());
+    logOperation(QStringLiteral("提醒"), QStringLiteral("确认完成：%1").arg(occurrenceLabel(occ)));
 
     emit occurrencesChanged();
     emit currentChanged();
@@ -840,6 +907,9 @@ bool AppCore::snooze(qint64 occurrenceId, QString *error)
     occ[QStringLiteral("snoozeUntilTs")] = m_nowMs + kSnoozeMinutes * 60 * 1000;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("snooze"), QString());
+    logOperation(QStringLiteral("提醒"),
+                 QStringLiteral("推迟 %1 分钟（第 %2 次）：%3")
+                     .arg(kSnoozeMinutes).arg(used + 1).arg(occurrenceLabel(occ)));
 
     emit occurrencesChanged();
     emit currentChanged();
@@ -874,6 +944,11 @@ bool AppCore::undoOccurrence(qint64 occurrenceId, QString *error)
     occ[QStringLiteral("snoozeUntilTs")] = 0;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("undo"), QString());
+    logOperation(QStringLiteral("提醒"),
+                 QStringLiteral("撤销，恢复为%1：%2")
+                     .arg(next == QStringLiteral("pending") ? QStringLiteral("待提醒")
+                                                            : QStringLiteral("待确认"),
+                          occurrenceLabel(occ)));
 
     emit occurrencesChanged();
     emit currentChanged();
@@ -901,6 +976,10 @@ bool AppCore::escalate(qint64 occurrenceId, QString *error)
     occ[QStringLiteral("state")] = QStringLiteral("escalated");
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("escalate"), QStringLiteral("timeout"));
+    logOperation(QStringLiteral("提醒"),
+                 QStringLiteral("超时未确认，已通知%1：%2")
+                     .arg(m_caregiverName.isEmpty() ? QStringLiteral("家人") : m_caregiverName,
+                          occurrenceLabel(occ)));
 
     emit occurrencesChanged();
     emit currentChanged();
@@ -912,6 +991,9 @@ bool AppCore::escalate(qint64 occurrenceId, QString *error)
 void AppCore::sos()
 {
     appendEvent(0, QStringLiteral("escalate"), QStringLiteral("sos"));
+    logOperation(QStringLiteral("呼救"),
+                 QStringLiteral("发出紧急呼救，通知%1")
+                     .arg(m_caregiverName.isEmpty() ? QStringLiteral("家人") : m_caregiverName));
     emit toast(QStringLiteral("已通知 %1").arg(m_caregiverName.isEmpty() ? QStringLiteral("家人") : m_caregiverName));
 }
 
@@ -1015,6 +1097,8 @@ qint64 AppCore::createPlan(const QVariantMap &plan, QString *error)
 
     m_day = QDate::currentDate();
     rebuildToday();
+    logOperation(QStringLiteral("计划"),
+                 QStringLiteral("新增提醒：%1 %2").arg(planLabel(stored), repeatTextFor(rule)));
     emit plansChanged();
     emit toast(QStringLiteral("已添加提醒：%1 %2")
                    .arg(dueMinutesFor(rule, m_day).isEmpty()
@@ -1099,6 +1183,10 @@ bool AppCore::updatePlan(qint64 planId, const QVariantMap &plan, QString *error)
         m_occurrences[i] = occ;
     }
 
+    logOperation(QStringLiteral("计划"),
+                 QStringLiteral("修改提醒：%1 %2")
+                     .arg(planLabel(stored),
+                          repeatTextFor(stored.value(QStringLiteral("rule")).toMap())));
     emit occurrencesChanged();
     emit currentChanged();
     emit plansChanged();
@@ -1136,6 +1224,7 @@ bool AppCore::skipToday(qint64 planId, QString *error)
 
     m_skippedOccurrences.insert(planId, stash);
     rebuildToday();
+    logOperation(QStringLiteral("计划"), QStringLiteral("今天不再提醒：%1").arg(planLabel(stored)));
     emit plansChanged();
     return true;
 }
@@ -1159,6 +1248,7 @@ bool AppCore::unskipToday(qint64 planId, QString *error)
     m_plans[index] = stored;
 
     rebuildTodayFrom(m_occurrences + m_skippedOccurrences.take(planId));
+    logOperation(QStringLiteral("计划"), QStringLiteral("恢复今天的提醒：%1").arg(planLabel(stored)));
     emit plansChanged();
     emit toast(QStringLiteral("已恢复今天的：%1").arg(stored.value(QStringLiteral("title")).toString()));
     return true;
@@ -1192,6 +1282,7 @@ bool AppCore::deletePlan(qint64 planId, QString *error)
 
     m_day = QDate::currentDate();
     rebuildToday();
+    logOperation(QStringLiteral("计划"), QStringLiteral("删除提醒：%1").arg(planLabel(stored)));
     emit plansChanged();
     return true;
 }
@@ -1211,6 +1302,7 @@ bool AppCore::restorePlan(qint64 planId, QString *error)
 
     m_day = QDate::currentDate();
     rebuildTodayFrom(m_occurrences + m_deletedOccurrences.take(planId));
+    logOperation(QStringLiteral("计划"), QStringLiteral("撤销删除：%1").arg(planLabel(stored)));
     emit plansChanged();
     emit toast(QStringLiteral("已恢复：%1").arg(stored.value(QStringLiteral("title")).toString()));
     return true;
@@ -1226,6 +1318,7 @@ qint64 AppCore::addRecord(const QString &type, double value, const QString &unit
     rec[QStringLiteral("at")] = m_nowMs;
     rec[QStringLiteral("correctedFrom")] = 0;
     m_records.append(rec);
+    logOperation(QStringLiteral("记录"), QStringLiteral("记下：%1").arg(recordLabel(type, value, unit)));
     emit recordsChanged();
     return rec.value(QStringLiteral("recordId")).toLongLong();
 }
@@ -1243,6 +1336,11 @@ bool AppCore::correctRecord(qint64 recordId, const QVariantMap &patch, QString *
         }
         rec[QStringLiteral("correctedFrom")] = recordId;
         m_records[i] = rec;
+        logOperation(QStringLiteral("记录"),
+                     QStringLiteral("修正记录：%1")
+                         .arg(recordLabel(rec.value(QStringLiteral("type")).toString(),
+                                          rec.value(QStringLiteral("value")).toDouble(),
+                                          rec.value(QStringLiteral("unit")).toString())));
         emit recordsChanged();
         return true;
     }
@@ -1256,7 +1354,13 @@ bool AppCore::removeRecord(qint64 recordId)
     for (int i = 0; i < m_records.size(); ++i) {
         if (m_records.at(i).toMap().value(QStringLiteral("recordId")).toLongLong() != recordId)
             continue;
+        const QVariantMap rec = m_records.at(i).toMap();
         m_records.removeAt(i);
+        logOperation(QStringLiteral("记录"),
+                     QStringLiteral("撤销记录：%1")
+                         .arg(recordLabel(rec.value(QStringLiteral("type")).toString(),
+                                          rec.value(QStringLiteral("value")).toDouble(),
+                                          rec.value(QStringLiteral("unit")).toString())));
         emit recordsChanged();
         return true;
     }
@@ -1451,6 +1555,8 @@ void AppCore::setAutoReminders(bool on)
     if (m_autoReminders == on)
         return;
     m_autoReminders = on;
+    logOperation(QStringLiteral("设置"),
+                 on ? QStringLiteral("打开自动提醒") : QStringLiteral("关闭自动提醒"));
 }
 
 void AppCore::resetDemo()
@@ -1471,5 +1577,6 @@ void AppCore::resetDemo()
         applySnapshot(m_demoData);
     }
 
+    logOperation(QStringLiteral("设置"), QStringLiteral("恢复演示数据"));
     emit toast(QStringLiteral("演示数据已恢复"));
 }

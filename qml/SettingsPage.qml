@@ -17,6 +17,7 @@ Item {
         if (ProfileVM.caregiverPhone.length === 0)
             return
         var number = ProfileVM.caregiverPhone.replace(/\s/g, "")
+        LogVM.note("呼救", "拨打紧急联系人电话：" + ProfileVM.caregiverPhone)
         if (!Qt.openUrlExternally("tel:" + number))
             Notify.info("演示版没有接入拨号，号码：" + ProfileVM.caregiverPhone)
     }
