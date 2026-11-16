@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 看护人管理后台：紧急联系人、服务器地址、同步状态、操作日志。
+// 看护人管理后台：紧急联系人、服务器地址、同步状态、外设板、AI 助手、操作日志。
 // 只能从 CaregiverGatePage 验证成功后进入。
 Item {
     id: page
@@ -416,6 +416,32 @@ Item {
                             onClicked: SyncVM.retrySync()
                         }
                     }
+                }
+
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "外设板"
+                }
+
+                BoardCard {
+                    width: parent.width
+                    theme: page.theme
+                }
+
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "AI 助手"
+                }
+
+                AssistantCard {
+                    width: parent.width
+                    theme: page.theme
                 }
 
                 AppText {

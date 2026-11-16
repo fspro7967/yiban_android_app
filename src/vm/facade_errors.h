@@ -39,6 +39,18 @@ inline QString facadeErrorText(const QString &code)
         return QStringLiteral("这台设备暂时没有可用的语音引擎");
     if (code == QStringLiteral("bad_pair_code"))
         return QStringLiteral("配对码不对，请重新输入");
+    if (code == QStringLiteral("bluetooth_unavailable"))
+        return QStringLiteral("这台设备没有可用的蓝牙");
+    if (code == QStringLiteral("bluetooth_off"))
+        return QStringLiteral("请先打开手机蓝牙");
+    if (code == QStringLiteral("bluetooth_denied"))
+        return QStringLiteral("没有蓝牙权限，请到系统设置里允许“附近的设备”");
+    if (code == QStringLiteral("board_not_found"))
+        return QStringLiteral("找不到这台设备，请重新扫描");
+    if (code == QStringLiteral("bad_ai_config"))
+        return QStringLiteral("AI 接入设置没填完整，地址要以 http:// 或 https:// 开头");
+    if (code == QStringLiteral("ai_busy"))
+        return QStringLiteral("上一句还没有回完，请稍等");
     if (code == QStringLiteral("offline"))
         return QStringLiteral("当前是离线演示，云端接口还没有接入");
     return code;

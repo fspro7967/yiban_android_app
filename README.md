@@ -197,7 +197,9 @@ qml/
   StatsPage.qml         7/30 天统计
   SettingsPage.qml      设置与演示工具
   CaregiverGatePage.qml 看护人验证缓冲页（60 秒超时）
-  AdminPage.qml         看护人管理后台（联系人、网络、同步、操作日志）
+  AdminPage.qml         看护人管理后台（联系人、网络、同步、外设板、AI 助手、操作日志）
+  BoardCard.qml         管理后台的“外设板”卡片：蓝牙扫描 / 绑定 / 看链路通不通
+  AssistantCard.qml     管理后台的“AI 助手”卡片：接入方式、地址与模型、试发一句
   ReminderScreen.qml    全屏到点提醒
   CallScreen.qml        呼救倒计时
   SosButton.qml         长按 3 秒 SOS
@@ -211,14 +213,26 @@ src/vm/
   device_vm.*           DeviceVM：pair/speak/sos/enterKiosk/TTS
   profile_vm.*          ProfileVM：老人与家人档案
   log_vm.*              LogVM：操作日志 entries/count/note/clear（管理后台用）
+  board_vm.*            BoardVM：外设板（雷达 + 灯板 + 确认键）的扫描/绑定/连接状态，给管理后台看
+  assistant_vm.*        AssistantVM：大模型接入配置 + ask/replyReady（云端 API 或 Ollama）
   app_core.*            端上数据核心（demo 内存实现，B1 换 SQLite + 状态机）
   facade_errors.h       错误码 → 中文文案
 src/comm/
   http_client.*         唯一 HTTP 落点（当前只有离线实现，B2 补真实客户端）
   connection_probe.*    管理后台“测试连接”：对服务器地址真发一次请求
+  device_link.*         到外设板的链路抽象：send/received/isUp，一行一条 JSON 的编码与拼行
+  ble_link.*            DeviceLink 的 BLE 实现：串口透传服务、主机心跳、绑定与自动重连
+include/ + src/
+  devicehandler.*       BLE 底层：扫描、连接、GATT、按 MTU 分包（由 ble_link 使用）
+  msgsender.*           大模型请求：OpenAI 兼容 API / Ollama，配置存 QSettings（由 AssistantVM 使用）
+                        两个都是从旧项目带过来的，QML 不直接碰；devicehandler 里的音频流控和
+                        BoardProtocol 是旧项目音频板的东西，本项目的外设板不负责音频，用不到
 tests/
   tst_app_core.cpp      facade 契约单测（24 例）
   tst_connection_probe.cpp  测试连接的探测逻辑（本机假服务器，不需要外网）
+  tst_device_link.cpp   外设板链路的分行与解析（拆包、粘包、脏行、超长行）
+tools/
+  fake_board.py         假外设板：用 Linux 电脑的蓝牙冒充外设板，固件没写出来前联调 BLE 链路
 docs/
   端上接口规范_v1.1.md   ★ 冻结的接口/形状/状态机/错误码
   后端交接清单.md       给 B1/B2 的逐文件落点与顺序
@@ -265,6 +279,11 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
   设置项（字号、语音开关）、管理后台里改的紧急联系人和服务器地址也只保存在内存，
   重启后恢复默认值；真实版需要 SQLite / 后端 profile / 设备配置接口。
 - 语音依赖设备 TTS 引擎；`AndroidManifest.xml` 已加 Android 11+ 的 `TTS_SERVICE` 查询声明。
+- 外设板（雷达 + 灯板 + 确认键，不负责音频）目前只接通了 BLE 链路：扫描、绑定、自动重连、
+  一行一条 JSON 的收发和主机心跳。**业务还没接**：提醒状态没有推给灯板，按键确认和雷达事件
+  收到了也只是显示在管理后台，不会改提醒状态（`TerminalBridge` 待写）。App 退到后台或息屏时
+  Qt 会暂停事件循环，心跳停发，要常驻得等前台服务。蓝牙权限由 Qt Bluetooth 模块在打包时自动写进 Manifest。
+- 大模型问答（`AssistantVM`）只能在管理后台试发，还没有接语音输入和朗读。
 - 新建页面向老人只暴露“每天 / 每周 / 每月 / 仅一次”四种常用重复（对应规则 JSON 见规范 §6）；
   interval / course / meal_offset 不进端上，更适合放到照护者端或后续“高级选项”。
 - 应用为竖屏锁定；若后续要做平板/横屏，需要重新排 2×2 入口与统计图。

@@ -311,6 +311,20 @@ ApplicationWindow {
     }
 
     Connections {
+        target: BoardVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: AssistantVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
         target: Notify
 
         function onInfo(text) { toast.show(text) }

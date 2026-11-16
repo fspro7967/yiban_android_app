@@ -37,3 +37,16 @@ target_link_libraries(tst_connection_probe PRIVATE Qt6::Core Qt6::Network Qt6::T
 
 add_test(NAME connection_probe COMMAND tst_connection_probe)
 set_tests_properties(connection_probe PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# 外设板链路的分行与解析（一行一条 JSON）：只测 DeviceLink 基类，不需要蓝牙。
+qt_add_executable(tst_device_link
+    tst_device_link.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/device_link.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/device_link.h
+)
+
+target_include_directories(tst_device_link PRIVATE ${CMAKE_SOURCE_DIR}/src/comm)
+target_link_libraries(tst_device_link PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME device_link COMMAND tst_device_link)
+set_tests_properties(device_link PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
