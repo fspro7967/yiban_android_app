@@ -181,8 +181,8 @@ Item {
 
                                 AppText {
                                     theme: page.theme
-                                    role: "heading"
-                                    font.pixelSize: page.theme.px(34)
+                                    role: "body"
+                                    font.weight: Font.DemiBold
                                     color: page.theme.ink
                                     text: Fmt.hhmm(card.modelData.dueTs)
                                 }
@@ -216,7 +216,7 @@ Item {
                             AppText {
                                 width: parent.width
                                 theme: page.theme
-                                role: "heading"
+                                role: "title"
                                 text: card.modelData.title
                                 wrapMode: Text.WordWrap
                             }
@@ -377,14 +377,15 @@ Item {
 
                                 AppText {
                                     theme: page.theme
-                                    role: "heading"
+                                    role: "label"
+                                    font.weight: Font.DemiBold
                                     text: Fmt.hhmm(modelData.dueTs)
                                 }
 
                                 AppText {
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    role: "body"
+                                    role: "heading"
                                     text: modelData.title
                                     elide: Text.ElideRight
                                     wrapMode: Text.NoWrap

@@ -3,7 +3,8 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// 全屏到点提醒：大时间、大药名、巨大确认键、10 分钟后备键；2 分钟未处理则通知家人。
+// 全屏到点提醒：事项名最大（要做什么比几点更重要），时间退为小一号的辅助信息；
+// 巨大确认键、10 分钟后备键；2 分钟未处理则通知家人。
 Item {
     id: screen
 
@@ -185,8 +186,7 @@ Item {
 
                 AppText {
                     theme: screen.theme
-                    role: "display"
-                    font.pixelSize: screen.theme.px(52)
+                    role: "heading"
                     color: screen.theme.reminderAccent
                     text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
                     wrapMode: Text.NoWrap
@@ -195,8 +195,7 @@ Item {
                 AppText {
                     width: parent.width
                     theme: screen.theme
-                    role: "heading"
-                    font.pixelSize: screen.theme.px(38)
+                    role: "hero"
                     color: screen.theme.reminderInk
                     text: screen.occ ? screen.occ.title : ""
                     wrapMode: Text.WordWrap
