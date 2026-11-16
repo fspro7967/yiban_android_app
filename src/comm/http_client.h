@@ -4,10 +4,31 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QObject>
+#include <QStringList>
 #include <QUrlQuery>
 
 class QNetworkAccessManager;
 class QNetworkReply;
+
+// 网络交换日志（环形缓冲）。
+//
+// 为什么要有它：后端联调时"到底发出去了没有、卡在哪一步"从界面上看不出来，
+// 只能连 adb 抓 logcat。这里把每次**真实交换**记成一行文本，管理页直接显示：
+//
+//   12:31:04  → POST /pair
+//   12:31:04  ← 200 /pair 138ms
+//   12:31:09  → POST /events (第 2 次)
+//   12:31:24  ↻ 超时，2s 后重试 (第 2 次)
+//   12:31:26  ✗ offline /events 15021ms
+//
+// 上限 80 条，先进先出；进程内共享，不落盘（重启即清空，避免旧日志误导）。
+namespace NetworkLog {
+
+void append(const QString &line);
+QStringList recent();
+void clear();
+
+} // namespace NetworkLog
 
 // HTTP 传输层接口（B2 实现）。
 //
@@ -94,5 +115,6 @@ private:
     QNetworkAccessManager *m_net = nullptr;
     QHash<quint64, Job> m_jobs;              // requestId → 还没结束的请求
     QHash<QNetworkReply *, quint64> m_replyIds;
+    QHash<quint64, qint64> m_startedAt;      // requestId → 本次 dispatch 的毫秒时刻
     quint64 m_nextId = 1;
 };

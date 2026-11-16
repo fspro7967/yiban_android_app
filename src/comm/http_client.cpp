@@ -2,7 +2,10 @@
 
 #include "app_settings.h"
 
+#include <QDateTime>
 #include <QJsonDocument>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QNetworkAccessManager>
 #include <QNetworkInformation>
 #include <QNetworkReply>
@@ -14,6 +17,45 @@ namespace {
 constexpr int kTransferTimeoutMs = 15000;
 constexpr int kMaxAttempts = 3;      // 首次 + 2 次重试
 constexpr int kBaseBackoffMs = 1000; // 1s → 2s（规范 §9 的 1/2/4/…/5min，端上取前两档够用）
+constexpr int kLogCapacity = 80;
+} // namespace
+
+// ---------------------------------------------------------------- 网络日志
+
+namespace NetworkLog {
+namespace {
+QMutex g_mutex;
+QStringList g_lines; // 只有 append/recent/clear 会碰它，都带锁
+} // namespace
+
+void append(const QString &line)
+{
+    QMutexLocker lock(&g_mutex);
+    g_lines.append(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))
+                   + QStringLiteral("  ") + line);
+    while (g_lines.size() > kLogCapacity)
+        g_lines.removeFirst();
+}
+
+QStringList recent()
+{
+    QMutexLocker lock(&g_mutex);
+    return g_lines;
+}
+
+void clear()
+{
+    QMutexLocker lock(&g_mutex);
+    g_lines.clear();
+}
+
+} // namespace NetworkLog
+
+namespace {
+QString method(const QString &path, bool isPost)
+{
+    return (isPost ? QStringLiteral("POST ") : QStringLiteral("GET ")) + path;
+}
 } // namespace
 
 // ---------------------------------------------------------------- 离线占位
@@ -25,9 +67,9 @@ OfflineHttpClient::OfflineHttpClient(QObject *parent)
 
 quint64 OfflineHttpClient::postJson(const QString &path, const QJsonObject &body)
 {
-    Q_UNUSED(path)
     Q_UNUSED(body)
     const quint64 id = m_nextId++;
+    NetworkLog::append(QStringLiteral("× %1 未发出（离线占位客户端）").arg(method(path, true)));
     QTimer::singleShot(0, this, [this, id] {
         emit failed(id, QStringLiteral("offline"));
     });
@@ -36,9 +78,9 @@ quint64 OfflineHttpClient::postJson(const QString &path, const QJsonObject &body
 
 quint64 OfflineHttpClient::getJson(const QString &path, const QUrlQuery &query)
 {
-    Q_UNUSED(path)
     Q_UNUSED(query)
     const quint64 id = m_nextId++;
+    NetworkLog::append(QStringLiteral("× %1 未发出（离线占位客户端）").arg(method(path, false)));
     QTimer::singleShot(0, this, [this, id] {
         emit failed(id, QStringLiteral("offline"));
     });
@@ -67,6 +109,7 @@ NetworkHttpClient::~NetworkHttpClient()
     }
     m_replyIds.clear();
     m_jobs.clear();
+    m_startedAt.clear();
 }
 
 bool NetworkHttpClient::isOnline() const
@@ -132,6 +175,7 @@ quint64 NetworkHttpClient::enqueue(const Job &job)
     if (!isOnline()) {
         // 没网就别发：立刻回 offline，上层显示"已记录，待同步"
         const quint64 id = job.id;
+        NetworkLog::append(QStringLiteral("× %1 未发出（设备离线）").arg(method(job.path, job.isPost)));
         QTimer::singleShot(0, this, [this, id] {
             emit failed(id, QStringLiteral("offline"));
         });
@@ -147,6 +191,15 @@ void NetworkHttpClient::dispatch(const Job &job)
     QUrl url(absoluteUrl(job.path));
     if (!job.query.isEmpty())
         url.setQuery(job.query);
+
+    m_startedAt.insert(job.id, QDateTime::currentMSecsSinceEpoch());
+    if (job.attempt == 0) {
+        NetworkLog::append(QStringLiteral("→ %1").arg(method(job.path, job.isPost)));
+    } else {
+        NetworkLog::append(QStringLiteral("→ %1（第 %2 次）")
+                               .arg(method(job.path, job.isPost))
+                               .arg(job.attempt + 1));
+    }
 
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader,
@@ -182,9 +235,15 @@ void NetworkHttpClient::onFinished(QNetworkReply *netReply)
         return; // 已经被别处清掉（析构/取消）
 
     Job job = it.value();
+    const qint64 started = m_startedAt.take(id);
+    const qint64 elapsed = started > 0 ? QDateTime::currentMSecsSinceEpoch() - started : 0;
 
     if (status >= 200 && status < 300) {
         m_jobs.remove(id);
+        NetworkLog::append(QStringLiteral("← %1 %2 %3ms")
+                               .arg(status)
+                               .arg(job.path)
+                               .arg(elapsed));
         const QJsonDocument doc = QJsonDocument::fromJson(payload);
         emit reply(id, status, doc.object());
         return;
@@ -194,6 +253,10 @@ void NetworkHttpClient::onFinished(QNetworkReply *netReply)
         // 服务端答了话：4xx/5xx 都不重试。
         // 409 冲突（另一台设备已处理这条）由上层按规范 §9 回滚，这里只原样交出。
         m_jobs.remove(id);
+        NetworkLog::append(QStringLiteral("← %1 %2 %3ms")
+                               .arg(status)
+                               .arg(job.path)
+                               .arg(elapsed));
         const QJsonDocument doc = QJsonDocument::fromJson(payload);
         emit reply(id, status, doc.object());
         return;
@@ -204,6 +267,11 @@ void NetworkHttpClient::onFinished(QNetworkReply *netReply)
         ++job.attempt;
         m_jobs.insert(id, job);
         const int delay = kBaseBackoffMs << (job.attempt - 1);
+        NetworkLog::append(QStringLiteral("↻ %1 %2ms 无响应，%3ms 后重试（第 %4 次）")
+                               .arg(method(job.path, job.isPost))
+                               .arg(elapsed)
+                               .arg(delay)
+                               .arg(job.attempt + 1));
         QTimer::singleShot(delay, this, [this, job] {
             if (m_jobs.contains(job.id))
                 dispatch(job);
@@ -215,5 +283,10 @@ void NetworkHttpClient::onFinished(QNetworkReply *netReply)
     const bool looksOffline = netError == QNetworkReply::HostNotFoundError
         || netError == QNetworkReply::NetworkSessionFailedError
         || netError == QNetworkReply::ConnectionRefusedError;
+    NetworkLog::append(QStringLiteral("✗ %1 %2 %3ms")
+                           .arg(looksOffline ? QStringLiteral("offline")
+                                             : QStringLiteral("network"))
+                           .arg(method(job.path, job.isPost))
+                           .arg(elapsed));
     emit failed(id, looksOffline ? QStringLiteral("offline") : QStringLiteral("network"));
 }

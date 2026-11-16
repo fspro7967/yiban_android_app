@@ -13,11 +13,19 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 精确闹钟：Android 12+ 用 setAlarmClock/setExact 必须声明，否则只能退化成非精确 -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!-- 锁屏全屏提醒：没有它 setFullScreenIntent 只会在状态栏留一条 -->
+    <!-- Android 13+ 的闹钟类应用自动获得精确闹钟权限，不必再引导用户去设置里点 -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- 锁屏全屏提醒：没有它 setFullScreenIntent 只会在状态栏留一条；
+         14+ 还要用户在"全屏通知"里单独放行，代码见 YibanPlatform.canUseFullScreenIntent -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- 闹钟到点要把屏幕叫醒 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 响铃前台服务：Android 14 起前台服务必须声明类型并配对应权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- 把闹铃音量拉到最大，静音模式下也能听见 -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!-- 关机重启后重建闹钟 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -86,20 +94,31 @@
                 android:resource="@xml/qtprovider_paths"/>
         </provider>
 
-        <!-- 到点闹钟的落点：只弹通知，不起 Activity（见 AlarmReceiver.java） -->
+        <!-- 到点闹钟的落点：只拉起 AlarmService，不起 Activity（见 AlarmReceiver.java） -->
         <receiver
             android:name="com.yiban.elder.AlarmReceiver"
             android:enabled="true"
             android:exported="false" />
 
-        <!-- 开机重建闹钟：系统广播对非导出组件同样可达 -->
+        <!-- 响铃 + 语音播报：前台服务，锁屏/进程被回收时也能出声（见 AlarmService.java） -->
+        <service
+            android:name="com.yiban.elder.AlarmService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- 开机/升级重建闹钟。
+             必须 exported="true"：BOOT_COMPLETED 由系统进程投递，
+             写成 false 时广播到不了，表现就是"重启后提醒全部失效"。 -->
         <receiver
             android:name="com.yiban.elder.BootReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>

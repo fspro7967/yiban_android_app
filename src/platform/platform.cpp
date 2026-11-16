@@ -23,6 +23,9 @@ const char *permissionName(Permission p)
         return "android.permission.POST_NOTIFICATIONS";
     case Permission::ExactAlarm:
         return "android.permission.SCHEDULE_EXACT_ALARM";
+    case Permission::FullScreenIntent:
+        // 不是一个可申请的运行时权限，走 canUseFullScreenIntent 单独判断
+        return "";
     case Permission::Phone:
         return "android.permission.CALL_PHONE";
     case Permission::Sms:
@@ -50,6 +53,8 @@ bool hasPermission(Permission p)
 #ifdef Q_OS_ANDROID
     if (p == Permission::ExactAlarm)
         return canScheduleExactAlarms();
+    if (p == Permission::FullScreenIntent)
+        return canUseFullScreenIntent();
 
     const QJniObject context = activityContext();
     if (!context.isValid())
@@ -70,6 +75,10 @@ void requestPermission(Permission p)
 #ifdef Q_OS_ANDROID
     if (p == Permission::ExactAlarm) {
         openExactAlarmSettings();
+        return;
+    }
+    if (p == Permission::FullScreenIntent) {
+        openFullScreenIntentSettings();
         return;
     }
 
@@ -96,6 +105,8 @@ QStringList grantedLabels()
         labels << QStringLiteral("通知");
     if (hasPermission(Permission::ExactAlarm))
         labels << QStringLiteral("精确闹钟");
+    if (hasPermission(Permission::FullScreenIntent))
+        labels << QStringLiteral("锁屏提醒");
     if (hasPermission(Permission::Phone))
         labels << QStringLiteral("电话");
     if (hasPermission(Permission::Sms))
@@ -144,6 +155,91 @@ void requestIgnoreBatteryOptimizations()
 #endif
 }
 
+bool canUseFullScreenIntent()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(
+        kBridge, "canUseFullScreenIntent", "(Landroid/content/Context;)Z", context.object());
+#else
+    return false;
+#endif
+}
+
+void openFullScreenIntentSettings()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return;
+    QJniObject::callStaticMethod<void>(kBridge, "openFullScreenIntentSettings",
+                                       "(Landroid/content/Context;)V", context.object());
+#endif
+}
+
+void speak(const QString &text)
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid() || text.trimmed().isEmpty())
+        return;
+    QJniObject jText = QJniObject::fromString(text);
+    QJniObject::callStaticMethod<void>(kBridge, "speakText",
+                                       "(Landroid/content/Context;Ljava/lang/String;)V",
+                                       context.object(), jText.object());
+#else
+    Q_UNUSED(text)
+#endif
+}
+
+void stopSpeaking()
+{
+#ifdef Q_OS_ANDROID
+    QJniObject::callStaticMethod<void>(kBridge, "stopSpeaking", "()V");
+#endif
+}
+
+bool canSpeak()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(kBridge, "canSpeak",
+                                                  "(Landroid/content/Context;)Z",
+                                                  context.object());
+#else
+    return false;
+#endif
+}
+
+bool wasSpokenRecently(int withinMs)
+{
+#ifdef Q_OS_ANDROID
+    return QJniObject::callStaticMethod<jboolean>(kBridge, "wasSpokenRecently", "(J)Z",
+                                                  jlong(withinMs));
+#else
+    Q_UNUSED(withinMs)
+    return false;
+#endif
+}
+
+QString diagnostics()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return QStringLiteral("android context 不可用");
+    QJniObject result = QJniObject::callStaticObjectMethod(
+        kBridge, "diagnose", "(Landroid/content/Context;)Ljava/lang/String;", context.object());
+    return result.isValid() ? result.toString() : QString();
+#else
+    return QStringLiteral("desktop");
+#endif
+}
+
 void notify(int id, const QString &title, const QString &text, bool fullScreen)
 {
 #ifdef Q_OS_ANDROID
@@ -180,7 +276,8 @@ void cancelNotification(int id)
 }
 
 bool scheduleAlarm(qint64 occurrenceId, qint64 triggerAtMs,
-                   const QString &title, const QString &text)
+                   const QString &title, const QString &text, bool silent, bool speak,
+                   const QString &audioPath)
 {
 #ifdef Q_OS_ANDROID
     const QJniObject context = activityContext();
@@ -189,16 +286,20 @@ bool scheduleAlarm(qint64 occurrenceId, qint64 triggerAtMs,
 
     QJniObject jTitle = QJniObject::fromString(title);
     QJniObject jText = QJniObject::fromString(text);
+    QJniObject jAudio = QJniObject::fromString(audioPath);
     return QJniObject::callStaticMethod<jboolean>(
         kBridge, "scheduleAlarm",
-        "(Landroid/content/Context;JJLjava/lang/String;Ljava/lang/String;)Z",
+        "(Landroid/content/Context;JJLjava/lang/String;Ljava/lang/String;ZZLjava/lang/String;)Z",
         context.object(), jlong(occurrenceId), jlong(triggerAtMs), jTitle.object(),
-        jText.object());
+        jText.object(), jboolean(silent), jboolean(speak), jAudio.object());
 #else
     Q_UNUSED(occurrenceId)
     Q_UNUSED(triggerAtMs)
     Q_UNUSED(title)
     Q_UNUSED(text)
+    Q_UNUSED(silent)
+    Q_UNUSED(speak)
+    Q_UNUSED(audioPath)
     return false;
 #endif
 }

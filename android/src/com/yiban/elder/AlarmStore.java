@@ -27,12 +27,22 @@ public final class AlarmStore {
         public final long triggerAt;
         public final String title;
         public final String text;
+        /** 夜间安静时段：到点只亮屏、不响铃不播报。 */
+        public final boolean silent;
+        /** 语音播报开关：关掉后只响铃不念文案。 */
+        public final boolean speak;
+        /** 离线 TTS 预渲染的播报 WAV（可为空）；到点优先放它，空则退回系统 TTS。 */
+        public final String audioPath;
 
-        Entry(long id, long triggerAt, String title, String text) {
+        Entry(long id, long triggerAt, String title, String text, boolean silent,
+                boolean speak, String audioPath) {
             this.id = id;
             this.triggerAt = triggerAt;
             this.title = title;
             this.text = text;
+            this.silent = silent;
+            this.speak = speak;
+            this.audioPath = audioPath == null ? "" : audioPath;
         }
     }
 
@@ -48,7 +58,19 @@ public final class AlarmStore {
     }
 
     public static void put(Context ctx, long id, long triggerAt, String title, String text) {
-        String value = triggerAt + SEP + safe(title) + SEP + safe(text);
+        put(ctx, id, triggerAt, title, text, false, true, null);
+    }
+
+    public static void put(Context ctx, long id, long triggerAt, String title, String text,
+            boolean silent, boolean speak) {
+        put(ctx, id, triggerAt, title, text, silent, speak, null);
+    }
+
+    public static void put(Context ctx, long id, long triggerAt, String title, String text,
+            boolean silent, boolean speak, String audioPath) {
+        String value = triggerAt + SEP + safe(title) + SEP + safe(text)
+                + SEP + (silent ? "1" : "0") + SEP + (speak ? "1" : "0")
+                + SEP + safe(audioPath);
         prefs(ctx).edit().putString(key(id), value).apply();
     }
 
@@ -100,7 +122,12 @@ public final class AlarmStore {
         } catch (NumberFormatException e) {
             return null;
         }
-        return new Entry(id, triggerAt, parts[1], parts[2]);
+        // 老版本只写了三段（时间/标题/正文）：按"不安静、要播报、无离线音频"兼容读取。
+        // 段位：0 时间 / 1 标题 / 2 正文 / 3 silent / 4 speak / 5 audioPath
+        final boolean silent = parts.length > 3 && "1".equals(parts[3]);
+        final boolean speak = parts.length <= 4 || "1".equals(parts[4]);
+        final String audioPath = parts.length > 5 ? parts[5] : "";
+        return new Entry(id, triggerAt, parts[1], parts[2], silent, speak, audioPath);
     }
 
     /** 分隔符出现在标题里会把解析搞乱，先替掉（提醒文案里几乎不会出现 \u0001）。 */

@@ -47,8 +47,10 @@ die() { echo "错误: $*" >&2; exit 1; }
 info() { echo "[sherpa-onnx] $*"; }
 
 sha256_of() {
+    # Git Bash (Windows) 的 sha256sum 在文件名含需转义字符时会在哈希前输出一个
+    # '\' 前缀（GNU coreutils 的转义模式），sed 一律剥掉，避免误报校验不符。
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
+        sha256sum "$1" | awk '{print $1}' | sed 's/^\\//'
     elif command -v shasum >/dev/null 2>&1; then
         shasum -a 256 "$1" | awk '{print $1}'
     else
@@ -111,7 +113,13 @@ ACTUAL_SHA="$(sha256_of "${ARCHIVE}")"
 # 所以这里显式写上 "./" 前缀，并用 --strip-components=3 把 "./jniLibs/<abi>/" 三段全部剥掉。
 # 这个坑只有在 Linux 构建机上才会暴露，改动时请勿去掉这两个细节。
 info "解压 arm64-v8a 的两个 .so ..."
-tar -xjf "${ARCHIVE}" -C "${LIB_DIR}" --strip-components=3 \
+# Windows（Git Bash 的 GNU tar）会把 "C:\...\tmp\xxx.tar.bz2" 里的 "C:" 当成
+# 远程磁带主机，必须加 --force-local；macOS 的 bsdtar 不认这个选项，按版本区分。
+TAR_FORCE_LOCAL=()
+if tar --version 2>/dev/null | grep -q GNU; then
+    TAR_FORCE_LOCAL=(--force-local)
+fi
+tar -xjf "${ARCHIVE}" -C "${LIB_DIR}" "${TAR_FORCE_LOCAL[@]}" --strip-components=3 \
     "./jniLibs/${ABI}/${LIB_C_API}" \
     "./jniLibs/${ABI}/${LIB_ORT}"
 

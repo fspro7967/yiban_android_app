@@ -5,8 +5,12 @@
 #include "facade_errors.h"
 #include "http_client.h"
 #include "platform.h"
+#ifdef Q_OS_ANDROID
+#include "alarm_tts.h"   // 离线播报渲染器（src/ 下，仅 Android 编译）
+#endif
 
 #include <QDateTime>
+#include <QDebug>
 #include <QLocale>
 #include <QRegularExpression>
 #include <QTextToSpeech>
@@ -56,16 +60,27 @@ DeviceVM::DeviceVM(QObject *parent)
         handlePairFailed(id, code);
     });
 
-    m_tts = new QTextToSpeech(this);
-    connect(m_tts, &QTextToSpeech::stateChanged, this, [this](QTextToSpeech::State) {
+    // Android 上不建 qtts：到点响铃时 Qt 进程可能已经被系统回收，
+    // 而且多数国产 ROM 上 QTextToSpeech 的 availableEngines() 是空的
+    // —— 这正是"到点没有语音播报"的直接原因。Android 一律走系统 TTS
+    // （Platform::speak → Java TextToSpeech，进程不在前台也能出声）。
+    if (!Platform::isAndroid()) {
+        m_tts = new QTextToSpeech(this);
+        connect(m_tts, &QTextToSpeech::stateChanged, this, [this](QTextToSpeech::State) {
+            emit audioChanged();
+        });
+        if (!m_tts->availableEngines().isEmpty()) {
+            m_tts->setLocale(QLocale(QLocale::Chinese, QLocale::China));
+            m_tts->setRate(-0.15);
+        }
+    }
+
+    m_speakTimer = new QTimer(this);
+    m_speakTimer->setSingleShot(true);
+    connect(m_speakTimer, &QTimer::timeout, this, [this] {
+        m_speaking = false;
         emit audioChanged();
     });
-
-    const QStringList engines = m_tts->availableEngines();
-    if (!engines.isEmpty()) {
-        m_tts->setLocale(QLocale(QLocale::Chinese, QLocale::China));
-        m_tts->setRate(-0.15);
-    }
 
     AppCore *core = AppCore::instance();
     connect(core, &AppCore::toast, this, &DeviceVM::toast);
@@ -93,6 +108,26 @@ DeviceVM::DeviceVM(QObject *parent)
     if (Platform::isAndroid() && !Platform::hasPermission(Platform::Permission::Notifications)) {
         QTimer::singleShot(2500, this, &DeviceVM::requestNotificationPermission);
     }
+
+    // 启动时打一行诊断：真机上"闹钟不响"九成能从这行看出原因
+    if (Platform::isAndroid()) {
+        qInfo().noquote() << "[平台诊断]" << Platform::diagnostics();
+    }
+
+    // 离线播报：把仓库自带的 TTS 模型提取出来加载，给每条提醒预渲染播报 WAV。
+    // 组里 review 的反馈——很多测试机没有中文 TTS 引擎，qtts 和系统 TTS 都念不出声；
+    // 离线模型跟铃声一样必然能放，是"没有语音播报"的根治方案。
+    // 仅 Android 编译（桌面没有 sherpa 库，见 CMakeLists 的 SPEECH_SOURCES）。
+#ifdef Q_OS_ANDROID
+    m_alarmTts = new AlarmTtsRenderer(this);
+    connect(m_alarmTts, &AlarmTtsRenderer::rendered, this,
+            [](qint64 id, const QString &path) {
+                qDebug().noquote() << "AlarmTts: 提醒" << id
+                                   << (path.isEmpty() ? "渲染失败（到点走系统 TTS 兜底）"
+                                                      : "已渲染 " + path);
+            });
+    m_alarmTts->start();
+#endif
 }
 
 // ---------------------------------------------------------------- 周期检查
@@ -108,6 +143,13 @@ void DeviceVM::tick()
     }
     refreshPermissions();
     refreshNetwork();
+
+    // 网络日志：2 秒同步一次就够看，管理页打开时不会漏掉任何一次交换
+    const QStringList log = NetworkLog::recent();
+    if (log != m_networkLog) {
+        m_networkLog = log;
+        emit networkLogChanged();
+    }
 }
 
 void DeviceVM::refreshPermissions()
@@ -132,11 +174,16 @@ void DeviceVM::refreshNetwork()
 
 bool DeviceVM::audioReady() const
 {
+    // Android 侧问系统 TTS 是否可用（与 qtts 无关）
+    if (Platform::isAndroid())
+        return Platform::canSpeak();
     return m_tts && !m_tts->availableEngines().isEmpty();
 }
 
 bool DeviceVM::speaking() const
 {
+    if (Platform::isAndroid())
+        return m_speaking;
     return m_tts && m_tts->state() == QTextToSpeech::Speaking;
 }
 
@@ -160,6 +207,8 @@ void DeviceVM::setVoiceEnabled(bool on)
     if (!on)
         stopSpeaking();
     emit voiceChanged();
+    // 已经排进系统的闹钟还带着旧的"要不要播报"标记，重排一遍才生效
+    QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
 }
 
 void DeviceVM::setNightQuiet(bool on)
@@ -172,6 +221,8 @@ void DeviceVM::setNightQuiet(bool on)
     if (m_quietActive)
         stopSpeaking();
     emit voiceChanged();
+    // 夜间安静的"只亮屏"标记要写进每条闹钟里，开关一变就必须重排
+    QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
 
     // 白天打开这个开关时界面上看不出任何变化，容易被当成"开关没用"。
     // 这里明说一句什么时候生效，省掉一次"夜间安静无效"的误报。
@@ -365,6 +416,24 @@ void DeviceVM::speak(const QString &text, const QString &tag)
     if (nightQuietNow() && !manual && !emergency)
         return;
 
+    if (Platform::isAndroid()) {
+        // 闹钟服务已经念过这句了（全屏界面被顶起来时 QML 会再调一次 speak），
+        // 20 秒内不重复，否则同一句话连念两遍像卡带。用户主动点的不受限制。
+        if (!manual && Platform::wasSpokenRecently(20000))
+            return;
+        if (!Platform::canSpeak()) {
+            emit commandRejected(QStringLiteral("audio_unavailable"),
+                                 facadeErrorText(QStringLiteral("audio_unavailable")));
+            return;
+        }
+        Platform::speak(text);
+        m_speaking = true;
+        emit audioChanged();
+        // 系统 TTS 没有回调，按字数估一个时长把 speaking 复位（200ms/字，1.5–15s）
+        m_speakTimer->start(qBound(1500, int(text.length()) * 200, 15000));
+        return;
+    }
+
     if (!audioReady()) {
         emit commandRejected(QStringLiteral("audio_unavailable"),
                              facadeErrorText(QStringLiteral("audio_unavailable")));
@@ -376,6 +445,16 @@ void DeviceVM::speak(const QString &text, const QString &tag)
 
 void DeviceVM::stopSpeaking()
 {
+    if (Platform::isAndroid()) {
+        Platform::stopSpeaking();
+        if (m_speaking) {
+            m_speaking = false;
+            if (m_speakTimer)
+                m_speakTimer->stop();
+            emit audioChanged();
+        }
+        return;
+    }
     if (m_tts)
         m_tts->stop();
 }
@@ -392,28 +471,36 @@ void DeviceVM::sos(int level)
                                                      : core->elderName();
 
     Platform::notify(9001, QStringLiteral("已通知家人"),
-                     QStringLiteral("正在联系 %1").arg(phone.isEmpty()
-                                                           ? QStringLiteral("家人")
-                                                           : phone),
+                     QStringLiteral("正在联系 %1，并发送短信")
+                         .arg(phone.isEmpty() ? QStringLiteral("家人") : phone),
                      false);
 
-    bool reached = false;
+    bool dialed = false;
+    bool smsed = false;
     if (!phone.isEmpty()) {
-        // 没有拨号权限就先申请，别静默失败（老人不会自己想到去设置里开）
-        if (!Platform::hasPermission(Platform::Permission::Phone)) {
-            Platform::requestPermission(Platform::Permission::Phone);
+        // 电话和短信**同时**走，不是二选一：
+        //   * 老人可能接通后一句话说不清病情，家属需要一条文字留痕；
+        //   * 电话拨出去了但没人接时，短信已经先到了，不会两头落空。
+        // 组里 review 的第一版是"拨通就不再发短信"，这里改成并行。
+        if (Platform::hasPermission(Platform::Permission::Phone)) {
+            dialed = Platform::call(phone);
         } else {
-            reached = Platform::call(phone);
+            Platform::requestPermission(Platform::Permission::Phone);
         }
-        // 拨不通就退化成短信（规范 §6 的降级要求）
-        if (!reached && Platform::hasPermission(Platform::Permission::Sms)) {
-            reached = Platform::sendSms(
+        if (Platform::hasPermission(Platform::Permission::Sms)) {
+            smsed = Platform::sendSms(
                 phone, QStringLiteral("【颐伴】%1 刚刚按下了紧急呼救，请立刻联系。").arg(name));
+        } else {
+            Platform::requestPermission(Platform::Permission::Sms);
         }
     }
 
-    if (!reached) {
+    if (!dialed && !smsed) {
         emit toast(QStringLiteral("没能联系上家人，请再按一次呼救，或直接拨打 120"));
+    } else if (!smsed) {
+        emit toast(QStringLiteral("已拨出电话；短信没发出去，请允许短信权限"));
+    } else if (!dialed) {
+        emit toast(QStringLiteral("已发出求助短信；电话没拨出，请允许电话权限"));
     }
 
     emit sosTriggered(level);
@@ -470,8 +557,30 @@ void DeviceVM::rescheduleAlarms()
         if (due <= now + 1000)
             continue; // 已经过点的不补闹钟，交给状态机标 missed
 
-        Platform::scheduleAlarm(occ.value(QStringLiteral("occurrenceId")).toLongLong(), due,
-                                occ.value(QStringLiteral("title")).toString(), occText(occ));
+        // 夜间安静按**触发时刻**判断，不是按排程时刻：
+        // 白天排好的 23:00 提醒，到点也不该响。
+        const qint64 occurrenceId =
+            occ.value(QStringLiteral("occurrenceId")).toLongLong();
+        const int hour = QDateTime::fromMSecsSinceEpoch(due).time().hour();
+        const bool quietAtDue = m_nightQuiet && (hour >= 22 || hour < 7);
+
+        // 离线播报：把这一条的播报文案预渲染成 WAV。渲染是异步的，排程先照常
+        // 进行并带上目标路径——到点通常在几十分钟后，届时文件早已写好；
+        // 万一没写好，AlarmService 会退回系统 TTS，不至于哑掉。
+        QString audioPath;
+#ifdef Q_OS_ANDROID
+        if (m_voiceEnabled && !quietAtDue && m_alarmTts) {
+            const QString title = occ.value(QStringLiteral("title")).toString();
+            const QString body = occText(occ);
+            m_alarmTts->render(occurrenceId,
+                               body.isEmpty() ? title : title + QStringLiteral("。") + body);
+            audioPath = AlarmTtsRenderer::wavPath(occurrenceId);
+        }
+#endif
+
+        Platform::scheduleAlarm(occurrenceId, due,
+                                occ.value(QStringLiteral("title")).toString(), occText(occ),
+                                quietAtDue, m_voiceEnabled, audioPath);
     }
 
     // 精确闹钟权限没开时，闹钟会退化成非精确（可能晚几分钟），只在第一次提醒
@@ -479,6 +588,11 @@ void DeviceVM::rescheduleAlarms()
         m_warnedExactAlarm = true;
         emit toast(QStringLiteral("请允许“闹钟和提醒”，否则提醒可能晚几分钟"));
         Platform::openExactAlarmSettings();
+    }
+    // Android 14+ 的"全屏通知"没开时，锁屏只会响不会亮屏
+    if (!m_warnedFullScreen && !Platform::canUseFullScreenIntent()) {
+        m_warnedFullScreen = true;
+        emit toast(QStringLiteral("锁屏提醒未开启，锁屏时可能只响不亮"));
     }
 }
 
@@ -512,6 +626,25 @@ void DeviceVM::requestExactAlarmPermission()
         return;
     Platform::requestPermission(Platform::Permission::ExactAlarm);
     emit toast(QStringLiteral("请在设置里允许“闹钟和提醒”，到点才能准时亮屏"));
+}
+
+void DeviceVM::requestFullScreenPermission()
+{
+    if (!Platform::isAndroid())
+        return;
+    if (Platform::canUseFullScreenIntent()) {
+        emit toast(QStringLiteral("锁屏全屏提醒已开启"));
+        return;
+    }
+    Platform::requestPermission(Platform::Permission::FullScreenIntent);
+    emit toast(QStringLiteral("请在“全屏通知”里允许颐伴，锁屏时才会亮屏"));
+}
+
+void DeviceVM::clearNetworkLog()
+{
+    NetworkLog::clear();
+    m_networkLog.clear();
+    emit networkLogChanged();
 }
 
 void DeviceVM::resetDemo()
