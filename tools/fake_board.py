@@ -11,10 +11,6 @@ BoardLinkProtocol、caremate_hardware/agent/硬件设计路线.md §2.3 一致�
 用法：python3 tools/fake_board.py [运行秒数，默认 120]
 依赖：python3-dbus、python3-gi（Ubuntu 自带），蓝牙已打开；不需要 root。
 然后在 App 的 管理后台 → 外设板 里扫描，会看到一台叫 YibanBoard 的设备。
-"""假外设板：用本机蓝牙（BlueZ）广播串口透传服务，按硬件设计路线 §2.3 的格式收发。
-
-收：主机写到 RX 的字节攒成行，逐行打印（能看到 5 秒一次的心跳）。
-发：主机订阅 TX 后，每 3 秒发一条 home/sensor/presence；故意按 20 字节一包拆开发。
 """
 import json, sys, time
 import dbus, dbus.exceptions, dbus.mainloop.glib, dbus.service
