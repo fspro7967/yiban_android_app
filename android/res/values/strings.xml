@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 颐伴新增的字符串资源。Qt 构建时会在 res/values/libs.xml 生成别的资源，
+     两份文件按 aapt2 规则正常合并，不冲突。 -->
+<resources>
+    <string name="yiban_sms_confirm_label">短信发送确认</string>
+    <string name="yiban_sms_confirm_desc">紧急呼救的短信发送确认：只在呼救发出后的 15 秒内，替老人自动点击系统的"发送"确认按钮。平时完全不活动。</string>
+</resources>

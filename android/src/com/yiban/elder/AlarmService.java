@@ -1,6 +1,7 @@
 package com.yiban.elder;
 
 import android.app.Notification;
+import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -46,7 +47,14 @@ public class AlarmService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private MediaPlayer player;
     private PowerManager.WakeLock wakeLock;
+    /** 把屏幕从黑着点亮起来（与保 CPU 的 PARTIAL 锁分开）。 */
+    private PowerManager.WakeLock screenLock;
+    /** 到点临时改掉的勿扰过滤器，播完恢复；-1 = 没改过。 */
+    private int savedDndFilter = -1;
     private boolean started = false;
+
+    /** 播报结束后把铃声恢复回来（播报期间暂停铃声用的）。 */
+    private final Runnable ringDuckRestore = this::restoreRing;
 
     private final Runnable stopTask = new Runnable() {
         @Override
@@ -62,11 +70,20 @@ public class AlarmService extends Service {
             //   1. 离线预渲染 WAV（排程时由 C++ 侧用仓库自带模型合成好落盘）：
             //      跟放铃声一样"读文件出声"，不依赖设备有没有 TTS 引擎；
             //   2. 系统 TTS：WAV 缺失/损坏时的兜底。
+            // 两条路都会先把铃声压到 15%：铃声循环和播报同在闹铃流上，
+            // 同音量混音时播报完全听不清（真机反馈 bug #2）。
             if (pendingAudioPath != null && !pendingAudioPath.isEmpty()
                     && new java.io.File(pendingAudioPath).canRead()) {
+                duckRing();
                 playAnnouncement(pendingAudioPath);
             } else if (pendingText != null) {
-                YibanPlatform.speakText(AlarmService.this, pendingText);
+                duckRing();
+                YibanPlatform.speakText(AlarmService.this, pendingText,
+                        AlarmService.this::restoreRing);
+                // 兜底：TTS 引擎异常时 onDone 不会回调，按字数估算强制恢复
+                long estimate = Math.min(15_000L,
+                        Math.max(2_000L, pendingText.length() * 220L));
+                handler.postDelayed(ringDuckRestore, estimate);
             }
         }
     };
@@ -104,8 +121,10 @@ public class AlarmService extends Service {
             text = "";
         }
 
-        startInForeground(AlarmReceiver.notificationId(id), title, text);
+        startInForeground(AlarmReceiver.notificationId(id), title, text, silent);
         acquireWakeLock();
+        wakeScreen();
+        bypassDnd();
 
         if (silent) {
             // 夜间安静：只亮屏、只留通知，一声不响。
@@ -131,12 +150,12 @@ public class AlarmService extends Service {
      * 且对应权限已授予，否则 startForeground 抛异常 —— 抛了就退回不带 type 的
      * 老写法，再不行就放弃，让通知栏那条兜底。
      */
-    private void startInForeground(int notificationId, String title, String text) {
+    private void startInForeground(int notificationId, String title, String text, boolean quiet) {
         if (started) {
             return;
         }
-        Notification notification =
-                YibanPlatform.buildAlarmNotification(this, notificationId, title, text, true);
+        Notification notification = YibanPlatform.buildAlarmNotification(
+                this, notificationId, title, text, true, quiet);
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(notificationId, notification,
@@ -166,6 +185,122 @@ public class AlarmService extends Service {
             wakeLock.acquire(RING_DURATION_MS + 10_000L);
         } catch (Exception e) {
             Log.w(TAG, "拿不到 wakelock: " + e);
+        }
+    }
+
+    /**
+     * 亮屏。PARTIAL_WAKE_LOCK 只保 CPU，屏幕黑着就一直是黑的 —— 真机
+     * （HyperOS 2 / Android 14）反馈"到点不亮屏"就是缺了这一步。
+     *
+     * SCREEN_BRIGHT + ACQUIRE_CAUSES_WAKEUP 直接把屏幕点亮，不依赖
+     * full-screen intent 权限（Android 14 上那个权限默认不发放，
+     * HyperOS 还额外要"锁屏显示"，靠它是靠不住的）。
+     * 再尽力把应用界面顶上来：QtActivity 在 Manifest 里带
+     * showWhenLocked/turnScreenOn，权限够时就是全屏提醒页。
+     */
+    private void wakeScreen() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                screenLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                | PowerManager.ON_AFTER_RELEASE,
+                        "yiban:alarmScreen");
+                screenLock.setReferenceCounted(false);
+                screenLock.acquire(15_000L);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "亮屏 wakelock 拿不到: " + t);
+        }
+        try {
+            // HyperOS 会拦"后台弹出界面"（Android 14 的 BAL 限制 + MIUI 私有
+            // appop），full-screen intent 权限又默认不发放——root 下自助放行，
+            // 老人机的提醒页才顶得上来（真机反馈 bug #1）。
+            YibanPlatform.grantPopupPermissions(this);
+            Intent launch = YibanPlatform.launchIntent(this);
+            if (launch != null) {
+                startActivity(launch);
+            }
+        } catch (Throwable t) {
+            // Android 14 的后台启动限制 / HyperOS"后台弹出界面"没开时会拦，
+            // 屏幕已经亮了 + 锁屏上有通知，不至于看不见
+            Log.i(TAG, "服务内启动界面被拦（可接受）: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 到点临时解除勿扰。USAGE_ALARM 在"优先"模式的默认配置下也会被压住
+     * （真机反馈 bug #3：夜间开着勿扰，闹铃不响）。有通知策略访问权限时
+     * 把过滤器切回"全部"，播完恢复原样；没权限但已 root 就自助写白名单。
+     */
+    private void bypassDnd() {
+        try {
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) {
+                return;
+            }
+            final int current = nm.getCurrentInterruptionFilter();
+            if (current == NotificationManager.INTERRUPTION_FILTER_ALL
+                    || current == NotificationManager.INTERRUPTION_FILTER_UNKNOWN) {
+                return;
+            }
+            if (!nm.isNotificationPolicyAccessGranted() && RootShell.available()) {
+                RootShell.appendSecureList("enabled_notification_policy_access_packages",
+                        getPackageName());
+            }
+            if (nm.isNotificationPolicyAccessGranted()) {
+                savedDndFilter = current;
+                nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL);
+                Log.i(TAG, "到点临时解除勿扰（原过滤器=" + current + "），播完恢复");
+            } else {
+                Log.w(TAG, "勿扰开着且没有通知策略权限，铃声可能被压住；请在设置里给应用"
+                        + "「勿扰」访问权限，或开启勿扰的\"闹钟\"例外");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "勿扰处理失败: " + t);
+        }
+    }
+
+    private void restoreDnd() {
+        if (savedDndFilter < 0) {
+            return;
+        }
+        try {
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null && nm.isNotificationPolicyAccessGranted()) {
+                nm.setInterruptionFilter(savedDndFilter);
+            }
+        } catch (Throwable ignored) {
+        }
+        savedDndFilter = -1;
+    }
+
+    /**
+     * 播报期间把铃声**整个暂停**：铃声和播报同在闹铃流上，同一流里两路
+     * 音源按音量混音，就算把铃声压到 12%，HyperOS 的提示音混响下语音
+     * 还是难听清（真机反馈 bug #2）。暂停最干净——播报完再接着响。
+     */
+    private void duckRing() {
+        handler.removeCallbacks(ringDuckRestore);
+        if (player != null && player.isPlaying()) {
+            try {
+                player.pause();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 播报结束（完成/出错/兜底计时到）后恢复铃声，可重入。 */
+    private void restoreRing() {
+        handler.removeCallbacks(ringDuckRestore);
+        if (player != null && !player.isPlaying()) {
+            try {
+                player.start(); // 从暂停处继续循环响铃
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -226,22 +361,29 @@ public class AlarmService extends Service {
                 if (announcementPlayer == mp) {
                     announcementPlayer = null;
                 }
+                restoreRing(); // 播完了，铃声回到满音量
             });
             player.setOnErrorListener((mp, what, extra) -> {
                 mp.release();
                 if (announcementPlayer == mp) {
                     announcementPlayer = null;
                 }
+                restoreRing();
                 return true;
             });
             player.prepare();
             player.start();
             announcementPlayer = player;
             YibanPlatform.noteSpoken();
+            // 兜底：onCompletion 因任何原因没回调时，按音频实际时长强制恢复铃声
+            handler.postDelayed(ringDuckRestore, player.getDuration() + 1_500L);
         } catch (Exception e) {
             Log.w(TAG, "播放离线播报失败，退回系统 TTS: " + e);
+            restoreRing();
             if (pendingText != null) {
-                YibanPlatform.speakText(AlarmService.this, pendingText);
+                duckRing();
+                YibanPlatform.speakText(AlarmService.this, pendingText,
+                        AlarmService.this::restoreRing);
             }
         }
     }
@@ -249,13 +391,19 @@ public class AlarmService extends Service {
     private void stopEverything() {
         handler.removeCallbacks(stopTask);
         handler.removeCallbacks(speakTask);
+        handler.removeCallbacks(ringDuckRestore);
         releasePlayer();
         releaseAnnouncementPlayer();
         YibanPlatform.stopSpeaking();
+        restoreDnd();
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
         wakeLock = null;
+        if (screenLock != null && screenLock.isHeld()) {
+            screenLock.release();
+        }
+        screenLock = null;
         started = false;
         try {
             stopForeground(false); // 通知留着，老人还能看到刚才提醒了什么
@@ -303,10 +451,15 @@ public class AlarmService extends Service {
         handler.removeCallbacksAndMessages(null);
         releasePlayer();
         releaseAnnouncementPlayer();
+        restoreDnd();
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
         wakeLock = null;
+        if (screenLock != null && screenLock.isHeld()) {
+            screenLock.release();
+        }
+        screenLock = null;
         super.onDestroy();
     }
 }

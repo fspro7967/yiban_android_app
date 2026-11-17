@@ -108,6 +108,23 @@
             android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- 短信确认弹窗的自动确认（见 SmsConfirmService.java）。
+             平时完全不活动：只在呼救发出后的 15 秒内、且只对 HyperOS 权限
+             弹窗起作用。root 下由 YibanPlatform 自动开启，无 root 需用户
+             在无障碍设置里手动启用一次。 -->
+        <service
+            android:name="com.yiban.elder.SmsConfirmService"
+            android:exported="false"
+            android:label="@string/yiban_sms_confirm_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/sms_confirm_service" />
+        </service>
+
         <!-- 开机/升级重建闹钟。
              必须 exported="true"：BOOT_COMPLETED 由系统进程投递，
              写成 false 时广播到不了，表现就是"重启后提醒全部失效"。 -->

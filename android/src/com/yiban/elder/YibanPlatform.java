@@ -18,6 +18,7 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.telephony.SmsManager;
+import android.util.Log;
 
 import java.util.Locale;
 
@@ -39,12 +40,17 @@ public final class YibanPlatform {
      * （闹铃音频属性 + 高优先级）真正落到用户设备上。
      */
     public static final String CHANNEL_ID = "yiban_reminder_v2";
+    /** 夜间安静（只亮屏不出声）专用的无声通道。通道声音归用户所有，一旦创建
+     * 就改不了，所以不能复用 v2——v2 挂着闹铃音，半夜前台通知自己就响了。 */
+    public static final String CHANNEL_ID_QUIET = "yiban_reminder_v2_quiet";
     public static final String CHANNEL_ID_LEGACY = "yiban_reminder";
     public static final String CHANNEL_NAME = "到点提醒";
 
     private static TextToSpeech sTts;
     private static volatile boolean sTtsReady;
     private static String sTtsPending;
+    /** 引擎未就绪时暂存的待播文案的完成回调（见 speakText）。 */
+    private static Runnable sTtsPendingDone;
     /** 最近一次开口的时刻（elapsedRealtime），用于去重：服务念过界面就不再念一遍。 */
     private static volatile long sSpokenAt = 0L;
 
@@ -165,6 +171,23 @@ public final class YibanPlatform {
         }
     }
 
+    /**
+     * root 下自助放行 HyperOS 的"后台弹出界面 / 悬浮窗"。
+     *
+     * Android 14 的后台启动限制（BAL）在 AOSP 侧卡后台 startActivity，
+     * MIUI/HyperOS 在此之上还有一道私有 appop（BG_UI_SHOW）。提醒到点时
+     * AlarmService 直接 startActivity 把提醒页顶到锁屏之上，这两道任何
+     * 一道没开都会被拦——表现就是"亮了屏但看不到提醒页"。
+     */
+    public static void grantPopupPermissions(Context ctx) {
+        if (!RootShell.available()) {
+            return;
+        }
+        final String pkg = ctx.getPackageName();
+        RootShell.exec("appops set " + pkg + " SYSTEM_ALERT_WINDOW allow");
+        RootShell.exec("appops set " + pkg + " BG_UI_SHOW allow");
+    }
+
     public static boolean isIgnoringBatteryOptimizations(Context ctx) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return true;
@@ -216,22 +239,60 @@ public final class YibanPlatform {
     }
 
     public static void speakText(Context ctx, String text) {
+        speakText(ctx, text, null);
+    }
+
+    /**
+     * 带完成回调的播报：AlarmService 靠它在播完时把压低的铃声恢复满音量。
+     * onDone 在播完/出错/引擎异常时都会被调（保证一次性语义），可能来自
+     * TTS 服务的工作线程，回调方注意线程安全。
+     */
+    public static void speakText(Context ctx, String text, Runnable onDone) {
         if (text == null || text.trim().isEmpty()) {
+            if (onDone != null) {
+                onDone.run();
+            }
             return;
         }
         ensureTts(ctx);
         if (sTts == null) {
+            if (onDone != null) {
+                onDone.run();
+            }
             return;
         }
         if (!sTtsReady) {
             // 引擎还在初始化：记住最后一句，就绪后补播
             sTtsPending = text;
+            sTtsPendingDone = onDone;
             return;
         }
         try {
+            sTts.setOnUtteranceProgressListener(new android.speech.tts.UtteranceProgressListener() {
+                @Override
+                public void onStart(String utteranceId) {
+                }
+
+                @Override
+                public void onDone(String utteranceId) {
+                    if (onDone != null) {
+                        onDone.run();
+                    }
+                }
+
+                @Override
+                public void onError(String utteranceId) {
+                    if (onDone != null) {
+                        onDone.run();
+                    }
+                }
+            });
             sTts.speak(text.trim(), TextToSpeech.QUEUE_FLUSH, null, "yiban");
             sSpokenAt = SystemClock.elapsedRealtime();
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            if (onDone != null) {
+                onDone.run();
+            }
         }
     }
 
@@ -288,8 +349,10 @@ public final class YibanPlatform {
                 sTtsReady = true;
                 final String pending = sTtsPending;
                 sTtsPending = null;
+                final Runnable pendingDone = sTtsPendingDone;
+                sTtsPendingDone = null;
                 if (pending != null) {
-                    speakText(app, pending);
+                    speakText(app, pending, pendingDone);
                 }
             });
         } catch (Throwable t) {
@@ -301,41 +364,57 @@ public final class YibanPlatform {
     // ---------------------------------------------------------------- 通知
 
     private static void ensureChannel(Context ctx) {
+        ensureChannel(ctx, CHANNEL_ID, CHANNEL_NAME, "到点提醒与紧急呼救", true);
+        ensureChannel(ctx, CHANNEL_ID_QUIET, CHANNEL_NAME + "（夜间安静）",
+                "夜间安静时段的到点提醒：只亮屏、只留通知，不出声不振动", false);
+    }
+
+    private static void ensureChannel(Context ctx, String id, String name, String desc,
+            boolean withSound) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return;
         }
         NotificationManager nm =
                 (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm == null || nm.getNotificationChannel(CHANNEL_ID) != null) {
+        if (nm == null || nm.getNotificationChannel(id) != null) {
             return;
         }
 
-        NotificationChannel channel = new NotificationChannel(CHANNEL_ID, CHANNEL_NAME,
+        NotificationChannel channel = new NotificationChannel(id, name,
                 NotificationManager.IMPORTANCE_HIGH);
-        channel.setDescription("到点提醒与紧急呼救");
+        channel.setDescription(desc);
 
-        // 显式指定闹铃音 + USAGE_ALARM：不指定时通道用"通知音"，
-        // 音量走铃声音量、静音模式下会被静音，老人根本听不见。
-        AudioAttributes attrs = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build();
-        Uri sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-        if (sound == null) {
-            sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        if (withSound) {
+            // 显式指定闹铃音 + USAGE_ALARM：不指定时通道用"通知音"，
+            // 音量走铃声音量、静音模式下会被静音，老人根本听不见。
+            AudioAttributes attrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+            Uri sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+            if (sound == null) {
+                sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+            }
+            if (sound != null) {
+                channel.setSound(sound, attrs);
+            }
+            channel.enableLights(true);
+            channel.enableVibration(true);
+            channel.setVibrationPattern(new long[] { 0, 600, 400, 600, 400, 900 });
+        } else {
+            // 夜间安静：不亮灯不振动，屏幕由 AlarmService 的亮屏锁负责
+            channel.setSound(null, null);
+            channel.enableLights(false);
+            channel.enableVibration(false);
+            channel.setVibrationPattern(null);
         }
-        if (sound != null) {
-            channel.setSound(sound, attrs);
-        }
-        channel.enableLights(true);
-        channel.enableVibration(true);
-        channel.setVibrationPattern(new long[] { 0, 600, 400, 600, 400, 900 });
         channel.setBypassDnd(true);
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         nm.createNotificationChannel(channel);
     }
 
-    private static Intent launchIntent(Context ctx) {
+    /** 应用主界面的启动意图（AlarmService 亮屏后要把界面顶上来也用它）。 */
+    public static Intent launchIntent(Context ctx) {
         Intent intent = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
         if (intent == null) {
             return null;
@@ -375,11 +454,24 @@ public final class YibanPlatform {
      */
     public static Notification buildAlarmNotification(Context ctx, int id, String title,
             String text, boolean fullScreen) {
+        return buildAlarmNotification(ctx, id, title, text, fullScreen, false);
+    }
+
+    /**
+     * 组一条提醒通知。fullScreen=true 时带 full-screen intent：
+     * 锁屏且系统放开权限的情况下，系统直接把 QtActivity 顶到最前。
+     * quiet=true 走夜间安静通道（无声音无振动，只留通知亮屏）。
+     *
+     * 抽成 public 是因为 AlarmService 要以 startForeground() 复用同一条通知，
+     * 否则前台服务和通知栏会出现两条一样的提醒。
+     */
+    public static Notification buildAlarmNotification(Context ctx, int id, String title,
+            String text, boolean fullScreen, boolean quiet) {
         ensureChannel(ctx);
 
         Notification.Builder builder;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder = new Notification.Builder(ctx, CHANNEL_ID);
+            builder = new Notification.Builder(ctx, quiet ? CHANNEL_ID_QUIET : CHANNEL_ID);
         } else {
             builder = new Notification.Builder(ctx);
         }
@@ -563,6 +655,18 @@ public final class YibanPlatform {
         }
     }
 
+    /**
+     * 呼救短信的三层发送，按可靠度排：
+     *
+     *   1. root + AT 通道直发（AtSmsSender）：modem 层提交，HyperOS 的
+     *      "发送确认"拦截根本不在路径上，老人不用点任何东西；
+     *   2. root 自动开启无障碍（SmsConfirmService）+ SmsManager：确认弹窗
+     *      出现的 15 秒内自动点"发送"；
+     *   3. 裸 SmsManager：前两层都不可用时的兜底，等用户自己确认。
+     *
+     * AT 那层要跑 shell、等 modem 应答，最坏十几秒，因此整个流程在后台
+     * 线程做；返回值语义从"已提交"放宽为"呼救短信已进入发送流程"。
+     */
     public static boolean sendSms(Context ctx, String number, String text) {
         if (number == null || number.trim().isEmpty()) {
             return false;
@@ -570,6 +674,45 @@ public final class YibanPlatform {
         if (!hasPermission(ctx, android.Manifest.permission.SEND_SMS)) {
             return false;
         }
+        final String num = normalize(number);
+        final String body = text == null ? "" : text;
+        final Context app = ctx.getApplicationContext();
+
+        new Thread(() -> {
+            try {
+                final boolean root = RootShell.available();
+                if (root) {
+                    // 先把无障碍服务开好：绑定要一两秒，等 AT 失败再开就赶不上弹窗了
+                    enableSmsConfirmService(app);
+                    if (AtSmsSender.send(num, body)) {
+                        Log.i("YibanSms", "短信已通过 AT 通道直发（绕过系统拦截）");
+                        return;
+                    }
+                }
+                SmsConfirmService.arm(); // 重新计时，覆盖 AT 阶段流逝的窗口
+                sendViaSmsManager(app, num, body);
+            } catch (Throwable t) {
+                Log.w("YibanSms", "短信发送线程异常: " + t);
+            }
+        }, "yiban-sms").start();
+        return true;
+    }
+
+    /** root 下把自动确认服务写进 enabled_accessibility_services（已在列表则不动）。 */
+    private static void enableSmsConfirmService(Context ctx) {
+        try {
+            String component = ctx.getPackageName() + "/com.yiban.elder.SmsConfirmService";
+            boolean ok = RootShell.appendSecureList(
+                    "enabled_accessibility_services", component);
+            if (ok) {
+                RootShell.exec("settings put secure accessibility_enabled 1");
+            }
+        } catch (Throwable t) {
+            Log.w("YibanSms", "自动开启无障碍服务失败: " + t);
+        }
+    }
+
+    private static void sendViaSmsManager(Context ctx, String number, String text) {
         try {
             SmsManager sm;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -578,12 +721,11 @@ public final class YibanPlatform {
                 sm = SmsManager.getDefault();
             }
             if (sm == null) {
-                return false;
+                return;
             }
-            sm.sendTextMessage(normalize(number), null, text, null, null);
-            return true;
+            sm.sendTextMessage(number, null, text, null, null);
         } catch (Exception e) {
-            return false;
+            Log.w("YibanSms", "SmsManager 发送失败: " + e);
         }
     }
 
@@ -638,9 +780,44 @@ public final class YibanPlatform {
         StringBuilder sb = new StringBuilder();
         sb.append("通知权限=").append(hasPostNotifications(ctx))
                 .append(" 精确闹钟=").append(canScheduleExactAlarms(ctx))
-                .append(" 全屏提醒=").append(canUseFullScreenIntent(ctx))
                 .append(" 电池白名单=").append(isIgnoringBatteryOptimizations(ctx))
                 .append(" 已登记闹钟=").append(AlarmStore.all(ctx).size());
+
+        // Android 14+ 全屏提醒被关时，root 下尝试用 cmd 自助放行（无此子命令
+        // 的 ROM 会报错但无害），再查一次真实状态
+        if (!canUseFullScreenIntent(ctx) && RootShell.available()) {
+            RootShell.exec("cmd notification allow_fsi " + ctx.getPackageName());
+        }
+        sb.append(" 全屏提醒=").append(canUseFullScreenIntent(ctx));
+
+        try {
+            NotificationManager nm =
+                    (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                int filter = nm.getCurrentInterruptionFilter();
+                String dnd = filter == NotificationManager.INTERRUPTION_FILTER_ALL ? "关"
+                        : filter == NotificationManager.INTERRUPTION_FILTER_NONE ? "完全静音"
+                        : filter == NotificationManager.INTERRUPTION_FILTER_ALARMS ? "仅闹钟"
+                        : filter == NotificationManager.INTERRUPTION_FILTER_PRIORITY ? "优先"
+                        : "未知(" + filter + ")";
+                sb.append(" 勿扰=").append(dnd)
+                        .append(" 勿扰策略权限=").append(nm.isNotificationPolicyAccessGranted());
+            }
+        } catch (Exception ignored) {
+        }
+
+        sb.append(" root=").append(RootShell.available());
+        if (RootShell.available()) {
+            AtSmsSender.warmUp(); // 后台探测 AT 通道，呼救发短信时省几秒
+            grantPopupPermissions(ctx); // 提前放行"后台弹出界面/悬浮窗"，到点亮屏才顶得上来
+        }
+        try {
+            String enabled = Settings.Secure.getString(ctx.getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            sb.append(" 短信自动确认=").append(
+                    enabled != null && enabled.contains("SmsConfirmService"));
+        } catch (Exception ignored) {
+        }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
