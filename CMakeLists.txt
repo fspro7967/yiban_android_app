@@ -84,8 +84,15 @@ unset(_qt_toolchain_normalized)
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Quick Qml)
 
-# TextToSpeech 用于提醒/统计的语音播报；Bluetooth 用于 BLE 连接外设板（BleLink / DeviceHandler）。
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql Bluetooth)
+# TextToSpeech 用于提醒/统计的语音播报；Bluetooth 用于 BLE 连接外设板（BleLink / DeviceHandler）；
+# Concurrent 给离线 TTS 的后台加载。
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql Bluetooth Concurrent)
+
+# sherpa-onnx（离线中文语音合成）——只编 Android；桌面构建连它的源也不编。
+# 到点播报走仓库自带模型预渲染的 WAV，见 src/alarm_tts.{h,cpp} 与组里 review 反馈。
+if(ANDROID)
+    include(third_party/sherpa-onnx/sherpa-onnx.cmake)
+endif()
 
 # QTP0001 NEW：QML 模块资源前缀使用 /qt/qml（默认 QML 导入路径）。
 # OLD 行为（资源放在 :/SmartGlasses/）在 Qt 6.11 上找不到 qmldir，
@@ -120,8 +127,12 @@ set(VM_SOURCES
         src/vm/assistant_vm.h
         src/vm/assistant_vm.cpp
         src/vm/facade_errors.h
+        src/comm/app_settings.h
+        src/comm/app_settings.cpp
         src/comm/http_client.h
         src/comm/http_client.cpp
+        src/platform/platform.h
+        src/platform/platform.cpp
         src/comm/connection_probe.h
         src/comm/connection_probe.cpp
         src/comm/device_link.h
@@ -140,11 +151,28 @@ set(BOARD_SOURCES
         src/msgsender.cpp
 )
 
+# 离线语音链路（模型提取 → sherpa-onnx 合成 → 到点播报 WAV）只在 Android 编译：
+# speechsynthesizer.cpp 直接调 sherpa 的 C API，桌面构建没有这个库。
+# 桌面构建上 DeviceVM 对 AlarmTtsRenderer 的引用也用 Q_OS_ANDROID 屏蔽（见 device_vm.cpp），
+# 桌面上到点播报本来就是空实现（platform.cpp 桌面 stub）。
+set(SPEECH_SOURCES "")
+if(ANDROID)
+    set(SPEECH_SOURCES
+            src/sentencesplitter.cpp
+            src/assetextractor.cpp
+            include/speechsynthesizer.h
+            src/speechsynthesizer.cpp
+            src/alarm_tts.h
+            src/alarm_tts.cpp
+    )
+endif()
+
 set(PROJECT_SOURCES
         ${TS_FILES}
         src/main.cpp
         ${VM_SOURCES}
         ${BOARD_SOURCES}
+        ${SPEECH_SOURCES}
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
@@ -215,7 +243,9 @@ endif()
 target_include_directories(yiban_android_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vm
     ${CMAKE_CURRENT_SOURCE_DIR}/src/comm
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/platform
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_link_libraries(yiban_android_app PRIVATE
@@ -226,13 +256,16 @@ target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Sql
     Qt${QT_VERSION_MAJOR}::Bluetooth
+    Qt${QT_VERSION_MAJOR}::Concurrent
 )
 
 # Android 上 Qt 的 TLS 后端要在运行时加载 libssl_3.so / libcrypto_3.so，APK 里不带就连不了 https
 #（管理后台"测试连接"和以后的云端同步都会报 TLS initialization failed）。
+# 同时把 sherpa-onnx 两个 .so 塞进 APK 并链接 C API（见 sherpa-onnx.cmake）。
 if(ANDROID)
     include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/android_openssl/android_openssl.cmake)
     add_android_openssl_libraries(yiban_android_app)
+    add_sherpa_onnx_libraries(yiban_android_app)
 endif()
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -288,16 +321,19 @@ if (ANDROID AND QT_VERSION_MAJOR EQUAL 6)
 
         # build-tools 的版本号因机器而异（Windows 上通常没有 37.0.0），
         # 所以列出已安装的所有版本、从新到旧找 apksigner，最后再退回 PATH。
+        # 注意 Windows 上它是 apksigner.bat，find_program 必须把完整文件名列上
+        # （只写 apksigner 时 CMake 不会自动补 .bat 后缀，上一版因此永远 NOTFOUND，
+        #  表现是 Release 构建一路绿灯但产出的 APK 根本没签名）。
         file(GLOB _build_tools_dirs "${ANDROID_SDK_ROOT}/build-tools/*")
         list(SORT _build_tools_dirs)
         list(REVERSE _build_tools_dirs)
         find_program(APKSIGNER_EXECUTABLE
-            NAMES apksigner
+            NAMES apksigner apksigner.bat
             PATHS ${_build_tools_dirs}
             NO_DEFAULT_PATH
         )
         if (NOT APKSIGNER_EXECUTABLE)
-            find_program(APKSIGNER_EXECUTABLE NAMES apksigner)
+            find_program(APKSIGNER_EXECUTABLE NAMES apksigner apksigner.bat)
         endif()
         unset(_build_tools_dirs)
 

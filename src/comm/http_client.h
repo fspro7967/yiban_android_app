@@ -1,8 +1,34 @@
 #pragma once
 
+#include <QByteArray>
+#include <QHash>
 #include <QJsonObject>
 #include <QObject>
+#include <QStringList>
 #include <QUrlQuery>
+
+class QNetworkAccessManager;
+class QNetworkReply;
+
+// 网络交换日志（环形缓冲）。
+//
+// 为什么要有它：后端联调时"到底发出去了没有、卡在哪一步"从界面上看不出来，
+// 只能连 adb 抓 logcat。这里把每次**真实交换**记成一行文本，管理页直接显示：
+//
+//   12:31:04  → POST /pair
+//   12:31:04  ← 200 /pair 138ms
+//   12:31:09  → POST /events (第 2 次)
+//   12:31:24  ↻ 超时，2s 后重试 (第 2 次)
+//   12:31:26  ✗ offline /events 15021ms
+//
+// 上限 80 条，先进先出；进程内共享，不落盘（重启即清空，避免旧日志误导）。
+namespace NetworkLog {
+
+void append(const QString &line);
+QStringList recent();
+void clear();
+
+} // namespace NetworkLog
 
 // HTTP 传输层接口（B2 实现）。
 //
@@ -43,5 +69,52 @@ public:
     quint64 getJson(const QString &path, const QUrlQuery &query) override;
 
 private:
+    quint64 m_nextId = 1;
+};
+
+// 真实实现：QNetworkAccessManager。
+//
+// 设计要点：
+//   * baseUrl / token / deviceId 全部从 AppSettings 取，所以"在管理后台改服务器地址"
+//     不用重连也不用重建客户端，下一次请求自然生效；
+//   * 同一个逻辑请求在重试时**复用 requestId**，上层只看到一次 reply/failed，
+//     重试对 SyncVM 完全透明（规范 §9：传输层重试不重新生成 id）；
+//   * 4xx 不重试（除了 408/429），409 原样交给上层做冲突回滚（规范 §9）；
+//   * 没网时立刻发 failed(id, "offline")，不等 15 秒超时。
+class NetworkHttpClient : public HttpClient
+{
+    Q_OBJECT
+
+public:
+    explicit NetworkHttpClient(QObject *parent = nullptr);
+    ~NetworkHttpClient() override;
+
+    bool isOnline() const override;
+    quint64 postJson(const QString &path, const QJsonObject &body) override;
+    quint64 getJson(const QString &path, const QUrlQuery &query) override;
+
+    // 配对成功后由 DeviceVM 写入；同时落盘，重启后仍然带着
+    void setToken(const QString &token);
+    QString token() const;
+
+private:
+    struct Job {
+        quint64 id = 0;
+        QString path;
+        QUrlQuery query;
+        QByteArray body;
+        bool isPost = true;
+        int attempt = 0;
+    };
+
+    quint64 enqueue(const Job &job);
+    void dispatch(const Job &job);
+    void onFinished(QNetworkReply *reply);
+    QString absoluteUrl(const QString &path) const;
+
+    QNetworkAccessManager *m_net = nullptr;
+    QHash<quint64, Job> m_jobs;              // requestId → 还没结束的请求
+    QHash<QNetworkReply *, quint64> m_replyIds;
+    QHash<quint64, qint64> m_startedAt;      // requestId → 本次 dispatch 的毫秒时刻
     quint64 m_nextId = 1;
 };
