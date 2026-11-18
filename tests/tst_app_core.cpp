@@ -138,6 +138,8 @@ void FacadeCoreTest::demoDomainsAreIsolated()
 
 void FacadeCoreTest::init()
 {
+    // B1 有了本地落库之后，每个用例都从空库开始，避免上一次运行的残留数据串进来。
+    AppCore::instance()->resetStorage();
     AppCore::instance()->resetDemo();
 }
 
