@@ -52,6 +52,9 @@ public:
     virtual quint64 getJson(const QString &path, const QUrlQuery &query) = 0;
 
 signals:
+    // 合约：reply/failed 不得在 postJson/getJson 的调用栈内**同步**发出
+    // （上层在拿到返回的 requestId 之后才开始认领回执）。实现要么天然
+    // 异步（QNetworkReply），要么用队列投递延迟一拍。
     void reply(quint64 requestId, int status, const QJsonObject &body);
     void failed(quint64 requestId, const QString &code);
 };

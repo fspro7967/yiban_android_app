@@ -13,6 +13,8 @@ constexpr auto kRole = "net/role";
 constexpr auto kVoice = "voice/enabled";
 constexpr auto kNightQuiet = "voice/nightQuiet";
 constexpr auto kLastSync = "sync/lastSyncTs";
+constexpr auto kStateSeq = "sync/stateSeq";
+constexpr auto kPlansSeq = "sync/plansSeq";
 
 // 与 DeviceVM 里的默认值保持一致：语音开、夜间安静开。
 constexpr auto kDefaultServerUrl = "https://api.yiban.example/v1";
@@ -128,6 +130,28 @@ qint64 AppSettings::lastSyncTs() const
 void AppSettings::setLastSyncTs(qint64 ts)
 {
     write(kLastSync, ts);
+}
+
+qint64 AppSettings::stateSeq() const
+{
+    const QSettings s;
+    return s.value(kStateSeq, 0).toLongLong();
+}
+
+void AppSettings::setStateSeq(qint64 seq)
+{
+    write(kStateSeq, seq);
+}
+
+qint64 AppSettings::plansSeq() const
+{
+    const QSettings s;
+    return s.value(kPlansSeq, 0).toLongLong();
+}
+
+void AppSettings::setPlansSeq(qint64 seq)
+{
+    write(kPlansSeq, seq);
 }
 
 void AppSettings::reset()

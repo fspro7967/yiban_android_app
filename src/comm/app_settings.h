@@ -39,6 +39,13 @@ public:
     qint64 lastSyncTs() const;
     void setLastSyncTs(qint64 ts);
 
+    // 服务端单调游标（规范 §9）：端上只持久化"已应用到的 seq"，
+    // 下次拉取带 ?since=<seq> 增量。换服务器/重新配对时由 SyncVM 清零。
+    qint64 stateSeq() const;
+    void setStateSeq(qint64 seq);
+    qint64 plansSeq() const;
+    void setPlansSeq(qint64 seq);
+
     // 仅演示/测试用：清空所有键（含 device_id，下次会重新生成）
     void reset();
 
