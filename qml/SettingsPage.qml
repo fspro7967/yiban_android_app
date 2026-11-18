@@ -12,6 +12,30 @@ Item {
     signal back()
     signal sosRequested()
     signal adminRequested()
+    signal permissionsRequested()
+
+    property bool pairCodeError: false
+
+    // 先在界面上挡住格式不对的码：已配对时"重新配对"要先解除旧配对，
+    // 码不对就不能动旧配对，否则一按就把好好的配对弄丢了。
+    function requestPair() {
+        var code = pairCodeField.text.trim()
+        if (!/^\d{6}$/.test(code)) {
+            page.pairCodeError = true
+            pairCodeField.forceFocus()
+            return
+        }
+        Qt.inputMethod.hide()
+        if (DeviceVM.paired)
+            repairDialog.open()
+        else
+            DeviceVM.pair(code, "elder")
+    }
+
+    function doRepair() {
+        DeviceVM.unpair()
+        DeviceVM.pair(pairCodeField.text.trim(), "elder")
+    }
 
     function callCaregiver() {
         if (ProfileVM.caregiverPhone.length === 0)
@@ -329,21 +353,47 @@ Item {
                             Item { Layout.fillWidth: true }
 
                             AppText {
+                                objectName: "pairStatus"
                                 theme: page.theme
                                 role: "label"
-                                color: page.theme.primary
+                                color: DeviceVM.paired ? page.theme.primary : page.theme.amberInk
                                 font.weight: Font.DemiBold
-                                text: "已连接（演示）"
+                                text: DeviceVM.paired ? "已配对" : "未配对"
                             }
                         }
 
+                        Field {
+                            id: pairCodeField
+                            objectName: "pairCodeField"
+                            width: parent.width
+                            theme: page.theme
+                            label: "配对码（6 位数字）"
+                            placeholder: "例如：123456"
+                            maxLength: 6
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            invalid: page.pairCodeError
+                            errorText: "请输入 6 位数字配对码"
+                            onTextChanged: page.pairCodeError = false
+                        }
+
                         AppButton {
+                            objectName: "pairButton"
                             width: parent.width
                             height: page.theme.touch
                             theme: page.theme
-                            text: "重新配对"
+                            text: DeviceVM.paired ? "重新配对" : "配对"
                             kind: "secondary"
-                            onClicked: Notify.info("演示版：配对接口尚未接入")
+                            onClicked: page.requestPair()
+                        }
+
+                        AppButton {
+                            objectName: "permissionsButton"
+                            width: parent.width
+                            height: page.theme.touch
+                            theme: page.theme
+                            text: "检查权限"
+                            kind: "secondary"
+                            onClicked: page.permissionsRequested()
                         }
                     }
                 }
@@ -482,6 +532,16 @@ Item {
         confirmText: "拨打"
         cancelText: "取消"
         onAccepted: page.callCaregiver()
+    }
+
+    ConfirmDialog {
+        id: repairDialog
+        theme: page.theme
+        title: "重新配对"
+        message: "会先解除现在的配对，再用新的配对码配对。"
+        confirmText: "重新配对"
+        cancelText: "取消"
+        onAccepted: page.doRepair()
     }
 
     ConfirmDialog {

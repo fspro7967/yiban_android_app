@@ -21,6 +21,18 @@ Item {
     readonly property int planCount: PlanVM.plans.length
     readonly property bool hasPlans: planCount > 0
 
+    // 只在手机上提示：电脑版没有权限模型。这三项缺任何一项，提醒就可能不响或不亮屏。
+    readonly property int missingPermissions: {
+        if (Qt.platform.os !== "android")
+            return 0
+        var need = ["通知", "精确闹钟", "锁屏提醒"]
+        var n = 0
+        for (var i = 0; i < need.length; ++i)
+            if (DeviceVM.permissions.indexOf(need[i]) < 0)
+                ++n
+        return n
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -69,6 +81,16 @@ Item {
                 spacing: page.theme.px(8)
                 topPadding: page.theme.px(4)
                 bottomPadding: page.theme.px(8)
+
+                NoticeBar {
+                    objectName: "permissionNotice"
+                    width: body.width
+                    visible: page.missingPermissions > 0
+                    theme: page.theme
+                    message: "有 " + page.missingPermissions + " 项权限没开，提醒可能不响"
+                    actionText: "去检查"
+                    onActionClicked: page.openPage("permissions")
+                }
 
                 Rectangle {
                     width: body.width
@@ -273,6 +295,14 @@ Item {
                         badgeColor: page.theme.inkSoft
                         onClicked: page.openPage("settings")
                     }
+                }
+
+                NoticeBar {
+                    objectName: "offlineNotice"
+                    width: body.width
+                    visible: DeviceVM.networkStatus === "offline"
+                    theme: page.theme
+                    message: "手机没有联网。提醒照常响，记录先存在手机里，联网后再上传。"
                 }
             }
         }

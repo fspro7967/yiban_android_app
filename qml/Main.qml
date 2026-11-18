@@ -45,6 +45,8 @@ ApplicationWindow {
             target = caregiverGateComponent
         else if (pageName === "admin")
             target = adminComponent
+        else if (pageName === "permissions")
+            target = permissionsComponent
         if (!target)
             return
         stack.push(target)
@@ -189,6 +191,15 @@ ApplicationWindow {
             onBack: window.goBack()
             onSosRequested: window.startSos()
             onAdminRequested: window.navigate("caregiverGate")
+            onPermissionsRequested: window.navigate("permissions")
+        }
+    }
+
+    Component {
+        id: permissionsComponent
+        PermissionsPage {
+            theme: window.theme
+            onBack: window.goBack()
         }
     }
 
