@@ -129,7 +129,7 @@ private:
     bool m_warnedFullScreen = false;
     bool m_speaking = false;
     QString m_role = QStringLiteral("elder");
-    QString m_serverUrl = QStringLiteral("https://api.yiban.example/v1");
+    QString m_serverUrl = QStringLiteral("http://101.245.109.50:8000/v1");
     QString m_wifiName = QStringLiteral("Home-2.4G");
     bool m_networkOnline = true;
 };

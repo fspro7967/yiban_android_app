@@ -16,8 +16,8 @@ constexpr auto kLastSync = "sync/lastSyncTs";
 constexpr auto kStateSeq = "sync/stateSeq";
 constexpr auto kPlansSeq = "sync/plansSeq";
 
-// 与 DeviceVM 里的默认值保持一致：语音开、夜间安静开。
-constexpr auto kDefaultServerUrl = "https://api.yiban.example/v1";
+// CareMate 云端默认地址（组内部署），设置页可改。
+constexpr auto kDefaultServerUrl = "http://101.245.109.50:8000/v1";
 } // namespace
 
 AppSettings *AppSettings::instance()

@@ -68,6 +68,8 @@ private:
     QTimer m_uploadBackoff;               // 上传失败退避
 
     quint64 m_uploadReq = 0;              // 在途请求 id（0 = 无）
+    quint64 m_alarmReq = 0;               // 呼救告警上传（occurrenceId=0 的 SOS 走 /alarm）
+    QString m_alarmEventId;               // 在途告警对应的本地事件 id
     quint64 m_stateReq = 0;
     quint64 m_plansReq = 0;
     int m_backoffMs = 0;                  // 下次退避时长；0 = 上传正常

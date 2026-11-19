@@ -556,7 +556,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 端点 ----
 
     def _pair(self, body: dict):
-        code = str(body.get("code") or "").strip()
+        # 契约键名 pair_code（CareMate 后端同款）；旧键 code 兼容保留
+        code = str(body.get("pair_code") or body.get("code") or "").strip()
         role = body.get("role") or "elder"
         device_id = body.get("device_id") or ""
         if not re.match(r"^\d{6}$", code) or not device_id:
@@ -600,7 +601,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _alarm(self, hh: dict, body: dict):
         alarm_id = self.store.add_alarm(hh["id"], body)
-        self._send(200, {"ok": True, "alarm_id": alarm_id})
+        # 契约 §8：告警 ack 必须带 server_seq（端上用它摘掉待上传事件）
+        seq = self.store.bump_seq(hh["id"])
+        self._send(200, {"ok": True, "alarm_id": alarm_id, "server_seq": seq})
 
     def _create_plan(self, hh: dict, body: dict):
         plan = dict(body)

@@ -35,6 +35,8 @@ public:
             else
                 emit reply(id, 200, eventsHandler(body));
         }
+        if (path == QLatin1String("/alarm") && alarmHandler)
+            emit reply(id, 200, alarmHandler(body));
         return id;
     }
 
@@ -49,6 +51,7 @@ public:
     }
 
     std::function<QJsonObject(const QJsonObject &)> eventsHandler;
+    std::function<QJsonObject(const QJsonObject &)> alarmHandler;
     std::function<QJsonObject(const QUrlQuery &)> stateHandler;
     std::function<QJsonObject(const QUrlQuery &)> plansHandler;
     QVector<QPair<QString, QJsonObject>> posts;
@@ -73,6 +76,22 @@ qint64 occurrenceIdOfPlan(qint64 planId)
     return 0;
 }
 
+// 造一条今天的计划并确认，产生一条待上传的 confirm 事件（带真实 occurrenceId）。
+// 注意：Q_ASSERT 在 Release 下连同表达式一起被编译掉，confirm 必须无条件调用。
+qint64 makeConfirmedOccurrence()
+{
+    QVariantMap plan;
+    plan[QStringLiteral("title")] = QStringLiteral("同步测试提醒");
+    QVariantMap rule;
+    rule[QStringLiteral("kind")] = QStringLiteral("daily");
+    rule[QStringLiteral("times")] = QStringList { QStringLiteral("23:59") };
+    plan[QStringLiteral("rule")] = rule;
+    const qint64 planId = AppCore::instance()->createPlan(plan);
+    const qint64 occurrenceId = occurrenceIdOfPlan(planId);
+    AppCore::instance()->confirm(occurrenceId);
+    return occurrenceId;
+}
+
 } // namespace
 
 class TestSync : public QObject
@@ -83,6 +102,7 @@ private slots:
     void initTestCase(); // QSettings 组织名必须在任何读写之前设好
     void init(); // 每个用例独立设置
     void uploadEventsAndAck();
+    void sosGoesThroughAlarm();
     void rejectedEventsAreExpired();
     void pullStateAppliesOccurrence();
     void localFinalStateNotReverted();
@@ -146,7 +166,7 @@ SyncVM *TestSync::makeSync(FakeHttpClient **fakeOut)
 
 void TestSync::uploadEventsAndAck()
 {
-    AppCore::instance()->sos(); // 产生一条待上传事件
+    makeConfirmedOccurrence(); // 带实例的 confirm 事件走 /events 批量上传
     SyncVM *vm = nullptr;
     FakeHttpClient *client = nullptr;
     vm = makeSync(&client);
@@ -181,23 +201,48 @@ void TestSync::uploadEventsAndAck()
     delete vm;
 }
 
-void TestSync::rejectedEventsAreExpired()
+void TestSync::sosGoesThroughAlarm()
 {
+    // SOS 呼救不带 occurrenceId：契约上走 POST /v1/alarm，不能进 /events
+    // （服务端会以 occurrence_not_found 拒绝）
     AppCore::instance()->sos();
     SyncVM *vm = nullptr;
     FakeHttpClient *client = nullptr;
     vm = makeSync(&client);
 
-    // 服务端全部拒绝：标记过期，不再重放，但日志里仍可导出
-    client->eventsHandler = [](const QJsonObject &) {
-        QJsonArray rejected;
+    QCOMPARE(vm->pendingCount(), 1);
+
+    QJsonObject alarmBody; // lambda 里不能用 QCOMPARE（宏含 return），先存后断言
+    client->alarmHandler = [&alarmBody](const QJsonObject &body) {
+        alarmBody = body;
         return QJsonObject {
-            { QLatin1String("accepted"), QJsonArray() },
-            { QLatin1String("rejected"), rejected }, // 真实形状见下方填充
-            { QLatin1String("next_seq"), 9 },
+            { QLatin1String("sent"), true },
+            { QLatin1String("channel"), QStringLiteral("webhook") },
+            { QLatin1String("server_seq"), 51.0 },
         };
     };
-    // 需要 eventId 才能填充 rejected —— 用处理器拿请求体再回
+
+    vm->retrySync();
+    flush();
+    // 校验告警请求体形状（CareMate _alarm 的口径）
+    QCOMPARE(alarmBody.value(QLatin1String("level")).toInt(), 3);
+    QCOMPARE(alarmBody.value(QLatin1String("source")).toString(), QStringLiteral("manual"));
+    QCOMPARE(alarmBody.value(QLatin1String("occurrence_id")).toInt(), 0);
+    QCOMPARE(vm->pendingCount(), 0); // ack 后从待上传队列摘掉
+    QCOMPARE(vm->syncState(), QStringLiteral("idle"));
+    QVERIFY(client->posts.size() >= 1);
+    QCOMPARE(client->posts.first().first, QStringLiteral("/alarm"));
+    delete vm;
+}
+
+void TestSync::rejectedEventsAreExpired()
+{
+    makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+
+    // 服务端全部拒绝：标记过期，不再重放，但日志里仍可导出
     client->eventsHandler = [](const QJsonObject &body) {
         QJsonArray rejected;
         for (const auto &e : body.value(QLatin1String("events")).toArray()) {
@@ -217,7 +262,7 @@ void TestSync::rejectedEventsAreExpired()
     vm->retrySync();
     flush(); // 回执是队列投递的，冲洗一轮事件循环让它们落袋
     QCOMPARE(vm->pendingCount(), 0);          // 不再出现在待上传里
-    QVERIFY(vm->eventLogCsv().contains(QStringLiteral("sos"))); // 日志仍可导出
+    QVERIFY(vm->eventLogCsv().contains(QStringLiteral("confirm"))); // 日志仍可导出
     delete vm;
 }
 

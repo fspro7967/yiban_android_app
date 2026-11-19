@@ -135,7 +135,7 @@ QString SyncVM::computeState() const
 {
     if (!canSync())
         return QStringLiteral("offline");
-    if (m_uploadReq || m_stateReq || m_plansReq)
+    if (m_uploadReq || m_alarmReq || m_stateReq || m_plansReq)
         return QStringLiteral("syncing");
     if (m_failed)
         return QStringLiteral("error");
@@ -185,11 +185,33 @@ void SyncVM::cycle()
 
 void SyncVM::uploadPending()
 {
-    if (m_uploadReq || !canSync())
+    if (m_uploadReq || m_alarmReq || !canSync())
         return;
     const QVariantList pending = AppCore::instance()->pendingEvents();
     if (pending.isEmpty())
         return;
+
+    // SOS 呼救（occurrenceId=0 的 escalate）不带实例，/events 会因
+    // occurrence_not_found 被拒；契约上它走 POST /v1/alarm。一次传一条，
+    // ack 后 eventsChanged 会再次触发本函数处理剩余事件。
+    for (const QVariant &entry : pending) {
+        const QVariantMap event = entry.toMap();
+        if (event.value(QStringLiteral("occurrenceId")).toLongLong() != 0)
+            continue;
+        if (event.value(QStringLiteral("action")).toString() != QLatin1String("escalate"))
+            continue;
+
+        QJsonObject body;
+        body.insert(QLatin1String("level"), 3);
+        body.insert(QLatin1String("source"), QStringLiteral("manual"));
+        body.insert(QLatin1String("occurrence_id"), 0);
+        body.insert(QLatin1String("reason"), event.value(QStringLiteral("reason")).toString());
+        body.insert(QLatin1String("device_id"), AppSettings::instance()->deviceId());
+        m_alarmEventId = event.value(QStringLiteral("eventId")).toString();
+        m_alarmReq = m_http->postJson(QStringLiteral("/alarm"), body);
+        emit syncChanged();
+        return;
+    }
 
     QJsonArray events;
     for (const QVariant &entry : pending)
@@ -243,6 +265,36 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
     if (requestId == 0)
         return;
     const bool ok = status >= 200 && status < 300;
+
+    if (requestId == m_alarmReq) {
+        m_alarmReq = 0;
+        const QString eventId = m_alarmEventId;
+        m_alarmEventId.clear();
+        if (ok) {
+            // 告警 ack：服务端一定回了 server_seq（契约 §8）；缺失时给 1 占位，
+            // 只要不为 0 就能把事件从待上传队列里摘掉。
+            const qint64 seq = static_cast<qint64>(
+                body.value(QLatin1String("server_seq")).toDouble());
+            AppCore::instance()->markEventsSynced(QVariantList {
+                QVariantMap {
+                    { QStringLiteral("eventId"), eventId },
+                    { QStringLiteral("serverSeq"), seq > 0 ? seq : 1 },
+                },
+            });
+            noteSuccess();
+        } else if (status == 401) {
+            m_failed = true;
+            AppSettings::instance()->clearToken();
+            AppSettings::instance()->setPairing(false, QString());
+            emit commandRejected(QStringLiteral("offline"),
+                                 QStringLiteral("登录已失效，请重新配对"));
+        } else {
+            m_failed = true;
+            scheduleUploadRetry();
+        }
+        emit syncChanged();
+        return;
+    }
 
     if (requestId == m_uploadReq) {
         m_uploadReq = 0;
@@ -313,6 +365,14 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
 void SyncVM::onFailed(quint64 requestId, const QString &code)
 {
     Q_UNUSED(code)
+    if (requestId != 0 && requestId == m_alarmReq) {
+        m_alarmReq = 0;
+        m_alarmEventId.clear();
+        m_failed = true;
+        scheduleUploadRetry();
+        emit syncChanged();
+        return;
+    }
     if (requestId != 0 && requestId == m_uploadReq) {
         m_uploadReq = 0;
         m_failed = true;

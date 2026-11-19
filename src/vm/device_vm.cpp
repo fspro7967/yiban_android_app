@@ -289,6 +289,8 @@ void DeviceVM::pair(const QString &code, const QString &role)
     }
 
     QJsonObject body;
+    // CareMate 后端读 pair_code，参考服务端读 code：两个键都带上，双端兼容
+    body.insert(QStringLiteral("pair_code"), code.trimmed());
     body.insert(QStringLiteral("code"), code.trimmed());
     body.insert(QStringLiteral("role"), targetRole);
     body.insert(QStringLiteral("device_id"), AppSettings::instance()->deviceId());
@@ -315,7 +317,13 @@ void DeviceVM::handlePairReply(quint64 requestId, int status, const QJsonObject 
         return;
 
     if (status < 200 || status >= 300) {
-        // 401/409 都是配对码不对或已被用掉，对用户来说是同一件事
+        if (status == 429) {
+            // CareMate 配对限速：同一来源 10 分钟最多 10 次
+            finishPair(false, m_role,
+                       QStringLiteral("配对尝试太频繁，请 10 分钟后再试"));
+            return;
+        }
+        // 401/404/409 都是配对码不对或已被用掉，对用户来说是同一件事
         finishPair(false, m_role, facadeErrorText(QStringLiteral("bad_pair_code")));
         return;
     }
@@ -323,6 +331,11 @@ void DeviceVM::handlePairReply(quint64 requestId, int status, const QJsonObject 
     const QString token = body.value(QStringLiteral("token")).toString();
     if (!token.isEmpty())
         AppSettings::instance()->setToken(token);
+
+    // 新令牌 = 新会话：游标归零，下一轮从服务端全量拉计划与状态
+    AppSettings::instance()->setStateSeq(0);
+    AppSettings::instance()->setPlansSeq(0);
+    AppSettings::instance()->setLastSyncTs(0);
 
     // 云端带回的老人/家属档案：写进 AppCore，QML 三个页面都读它
     AppCore::instance()->setProfile(

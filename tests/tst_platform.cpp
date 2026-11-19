@@ -90,7 +90,7 @@ void PlatformTest::settingsRoundTrip()
     AppSettings::instance()->reset();
     QCOMPARE(AppSettings::instance()->voiceEnabled(), true);
     QCOMPARE(AppSettings::instance()->nightQuiet(), true);
-    QCOMPARE(AppSettings::instance()->serverUrl(), QStringLiteral("https://api.yiban.example/v1"));
+    QCOMPARE(AppSettings::instance()->serverUrl(), QStringLiteral("http://101.245.109.50:8000/v1"));
 }
 
 void PlatformTest::deviceIdIsStable()
