@@ -7,7 +7,7 @@
 #   * 事件日志：重复点按同一状态不会重复记账
 # 后端（B1）替换 AppCore 内部实现后，这些用例必须原样通过。
 
-find_package(Qt6 REQUIRED COMPONENTS Core Qml Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Qml Test Sql)
 
 qt_add_executable(tst_app_core
     tst_app_core.cpp
@@ -18,10 +18,13 @@ qt_add_executable(tst_app_core
 )
 
 target_include_directories(tst_app_core PRIVATE ${CMAKE_SOURCE_DIR}/src/vm)
-target_link_libraries(tst_app_core PRIVATE Qt6::Core Qt6::Qml Qt6::Test)
+target_link_libraries(tst_app_core PRIVATE Qt6::Core Qt6::Qml Qt6::Test Qt6::Sql)
 
 add_test(NAME facade_app_core COMMAND tst_app_core)
-set_tests_properties(facade_app_core PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# 用构建目录里的独立库文件，别碰用户 %APPDATA% 下的真实数据；
+# 每条用例自己会 resetStorage()，但文件位置仍要隔离。
+set_tests_properties(facade_app_core PROPERTIES ENVIRONMENT
+    "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_app_core.sqlite")
 
 # 管理后台"测试连接"的探测逻辑：用本机假服务器覆盖各种应答，不需要外网。
 find_package(Qt6 REQUIRED COMPONENTS Network)

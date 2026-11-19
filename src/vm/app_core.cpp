@@ -6,6 +6,16 @@
 #include <QUuid>
 #include <QtMath>
 
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QStandardPaths>
+
 #include <algorithm>
 #include <climits>
 #include <utility>
@@ -18,6 +28,36 @@ constexpr int kMaxSnooze = 3;
 constexpr int kDefaultWindowMin = 30;
 constexpr int kDefaultEscalateMin = 15;
 constexpr int kMaxOperationLog = 200;
+
+// 本地库连接名（同一个进程里只开一条连接）。
+const QString kDbConnection = QStringLiteral("yiban_app_core");
+
+QByteArray variantMapToJson(const QVariantMap &map)
+{
+    return QJsonDocument(QJsonObject::fromVariantMap(map)).toJson(QJsonDocument::Compact);
+}
+
+QVariantMap jsonToVariantMap(const QByteArray &blob)
+{
+    return QJsonDocument::fromJson(blob).object().toVariantMap();
+}
+
+QByteArray variantListHashToJson(const QHash<qint64, QVariantList> &hash)
+{
+    QJsonObject object;
+    for (auto it = hash.constBegin(); it != hash.constEnd(); ++it)
+        object.insert(QString::number(it.key()), QJsonArray::fromVariantList(it.value()));
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+
+QHash<qint64, QVariantList> jsonToVariantListHash(const QByteArray &blob)
+{
+    QHash<qint64, QVariantList> hash;
+    const QJsonObject object = QJsonDocument::fromJson(blob).object();
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it)
+        hash.insert(it.key().toLongLong(), it.value().toArray().toVariantList());
+    return hash;
+}
 
 // event_id 的命名空间固定，保证同样的 (occurrence, action, ts) 只会产生一个 id。
 const QUuid kEventNamespace(QStringLiteral("{7b0f7d3e-3c2a-4a55-9f0e-6b1a2c8d4e11}"));
@@ -134,7 +174,23 @@ AppCore::AppCore(QObject *parent)
 
     seedDemo();
     m_demoData = snapshot();
-    clearActive();
+
+    // 真实数据域从本地 SQLite 恢复；没有库（首次安装）就从空数据开始。
+    openDatabase();
+    ensureSchema();
+    DataSnapshot saved;
+    if (loadRealData(&saved)) {
+        m_realData = saved;
+        applySnapshot(m_realData);
+    } else {
+        clearActive();
+    }
+
+    // 真实域的任何变更都落到本地库；演示域是临时快照，不写盘（schedulePersist 里判断）。
+    connect(this, &AppCore::occurrencesChanged, this, &AppCore::schedulePersist);
+    connect(this, &AppCore::plansChanged, this, &AppCore::schedulePersist);
+    connect(this, &AppCore::recordsChanged, this, &AppCore::schedulePersist);
+    connect(this, &AppCore::profileChanged, this, &AppCore::schedulePersist);
 }
 
 AppCore *AppCore::instance()
@@ -1557,6 +1613,7 @@ void AppCore::setAutoReminders(bool on)
     m_autoReminders = on;
     logOperation(QStringLiteral("设置"),
                  on ? QStringLiteral("打开自动提醒") : QStringLiteral("关闭自动提醒"));
+    schedulePersist();
 }
 
 void AppCore::resetDemo()
@@ -1579,4 +1636,271 @@ void AppCore::resetDemo()
 
     logOperation(QStringLiteral("设置"), QStringLiteral("恢复演示数据"));
     emit toast(QStringLiteral("演示数据已恢复"));
+}
+
+// ---------------------------------------------------------------------------
+// 本地持久化（SQLite）
+//
+// 设计取舍：只把"真实数据域"落盘，演示域仍是内存快照（重启即回到演示初始态，
+// 与 README 里"演示数据不写回真实域"的约定一致）。每次真实域变更后，
+// 在同一轮事件循环末尾把整份真实域快照写进本地库，事务内先清表再插入，
+// 保证库里永远是"某一时刻的完整状态"，不会出现半截数据。
+// ---------------------------------------------------------------------------
+
+void AppCore::openDatabase()
+{
+    const QString overridePath = qEnvironmentVariable("YIBAN_APP_DB");
+    if (!overridePath.isEmpty()) {
+        m_dbPath = overridePath;
+    } else {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        m_dbPath = QDir(dir).filePath(QStringLiteral("app_core.sqlite"));
+    }
+
+    const QFileInfo info(m_dbPath);
+    if (!info.absolutePath().isEmpty())
+        QDir().mkpath(info.absolutePath());
+
+    if (QSqlDatabase::contains(kDbConnection))
+        QSqlDatabase::removeDatabase(kDbConnection);
+    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), kDbConnection);
+    db.setDatabaseName(m_dbPath);
+    m_dbReady = db.open();
+    if (!m_dbReady) {
+        qWarning() << "[AppCore] 本地数据库打开失败：" << m_dbPath << db.lastError().text();
+        return;
+    }
+
+    QSqlQuery pragma(db);
+    pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
+    pragma.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
+}
+
+void AppCore::ensureSchema()
+{
+    if (!m_dbReady)
+        return;
+
+    QSqlDatabase db = QSqlDatabase::database(kDbConnection);
+    QSqlQuery query(db);
+    const QStringList statements = {
+        QStringLiteral("CREATE TABLE IF NOT EXISTS meta ("
+                       "key TEXT PRIMARY KEY, value TEXT)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS plans ("
+                       "id INTEGER PRIMARY KEY, json TEXT NOT NULL)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS occurrences ("
+                       "id INTEGER PRIMARY KEY, plan_id INTEGER, day TEXT, state TEXT, "
+                       "json TEXT NOT NULL)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS records ("
+                       "id INTEGER PRIMARY KEY, json TEXT NOT NULL)"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS events ("
+                       "event_id TEXT PRIMARY KEY, occurrence_id INTEGER, action TEXT, ts INTEGER, "
+                       "synced INTEGER NOT NULL DEFAULT 0, json TEXT NOT NULL)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_occurrences_day ON occurrences(day)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_events_synced ON events(synced)"),
+    };
+    for (const QString &sql : statements) {
+        if (!query.exec(sql))
+            qWarning() << "[AppCore] 建表失败：" << sql << query.lastError().text();
+    }
+}
+
+void AppCore::schedulePersist()
+{
+    if (!m_dbReady || m_demoMode || m_persistPending)
+        return;
+    m_persistPending = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_persistPending = false;
+        persistNow();
+    });
+}
+
+void AppCore::persistNow()
+{
+    if (!m_dbReady || m_demoMode)
+        return;
+
+    const DataSnapshot data = snapshot();
+    QSqlDatabase db = QSqlDatabase::database(kDbConnection);
+    if (!db.isOpen() || !db.transaction())
+        return;
+
+    QSqlQuery query(db);
+    bool ok = query.exec(QStringLiteral("DELETE FROM plans"))
+              && query.exec(QStringLiteral("DELETE FROM occurrences"))
+              && query.exec(QStringLiteral("DELETE FROM records"))
+              && query.exec(QStringLiteral("DELETE FROM events"));
+
+    const auto insertPlan = [&](const QVariantMap &plan) {
+        query.prepare(QStringLiteral("INSERT INTO plans (id, json) VALUES (?, ?)"));
+        query.addBindValue(plan.value(QStringLiteral("planId")).toLongLong());
+        query.addBindValue(variantMapToJson(plan));
+        return query.exec();
+    };
+    const auto insertOccurrence = [&](const QVariantMap &occ) {
+        query.prepare(QStringLiteral(
+            "INSERT INTO occurrences (id, plan_id, day, state, json) VALUES (?, ?, ?, ?, ?)"));
+        query.addBindValue(occ.value(QStringLiteral("occurrenceId")).toLongLong());
+        query.addBindValue(occ.value(QStringLiteral("planId")).toLongLong());
+        query.addBindValue(data.day.isValid() ? data.day.toString(Qt::ISODate) : QString());
+        query.addBindValue(occ.value(QStringLiteral("state")).toString());
+        query.addBindValue(variantMapToJson(occ));
+        return query.exec();
+    };
+    const auto insertRecord = [&](const QVariantMap &record) {
+        query.prepare(QStringLiteral("INSERT INTO records (id, json) VALUES (?, ?)"));
+        query.addBindValue(record.value(QStringLiteral("recordId")).toLongLong());
+        query.addBindValue(variantMapToJson(record));
+        return query.exec();
+    };
+    const auto insertEvent = [&](const QVariantMap &event) {
+        query.prepare(QStringLiteral(
+            "INSERT INTO events (event_id, occurrence_id, action, ts, synced, json) "
+            "VALUES (?, ?, ?, ?, ?, ?)"));
+        query.addBindValue(event.value(QStringLiteral("eventId")).toString());
+        query.addBindValue(event.value(QStringLiteral("occurrenceId")).toLongLong());
+        query.addBindValue(event.value(QStringLiteral("action")).toString());
+        query.addBindValue(event.value(QStringLiteral("ts")).toLongLong());
+        query.addBindValue(event.value(QStringLiteral("synced"), 0).toInt());
+        query.addBindValue(variantMapToJson(event));
+        return query.exec();
+    };
+
+    if (ok) {
+        for (const QVariant &entry : data.plans)
+            ok = insertPlan(entry.toMap()) && ok;
+        for (const QVariant &entry : data.occurrences)
+            ok = insertOccurrence(entry.toMap()) && ok;
+        for (const QVariant &entry : data.records)
+            ok = insertRecord(entry.toMap()) && ok;
+        for (const QVariant &entry : data.events)
+            ok = insertEvent(entry.toMap()) && ok;
+    }
+
+    const auto setMeta = [&](const QString &key, const QString &value) {
+        query.prepare(QStringLiteral("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)"));
+        query.addBindValue(key);
+        query.addBindValue(value);
+        return query.exec();
+    };
+    if (ok) {
+        ok = setMeta(QStringLiteral("schema_version"), QStringLiteral("1"))
+             && setMeta(QStringLiteral("next_plan_id"), QString::number(data.nextPlanId))
+             && setMeta(QStringLiteral("next_record_id"), QString::number(data.nextRecordId))
+             && setMeta(QStringLiteral("next_event_seq"), QString::number(data.nextEventSeq))
+             && setMeta(QStringLiteral("elder_name"), data.elderName)
+             && setMeta(QStringLiteral("caregiver_name"), data.caregiverName)
+             && setMeta(QStringLiteral("caregiver_phone"), data.caregiverPhone)
+             && setMeta(QStringLiteral("day"), data.day.toString(Qt::ISODate))
+             && setMeta(QStringLiteral("start_date"), data.startDate.toString(Qt::ISODate))
+             && setMeta(QStringLiteral("auto_reminders"),
+                        m_autoReminders ? QStringLiteral("1") : QStringLiteral("0"))
+             && setMeta(QStringLiteral("history"),
+                        QString::fromUtf8(variantMapToJson(data.history)))
+             && setMeta(QStringLiteral("deleted_occurrences"),
+                        QString::fromUtf8(variantListHashToJson(data.deletedOccurrences)))
+             && setMeta(QStringLiteral("skipped_occurrences"),
+                        QString::fromUtf8(variantListHashToJson(data.skippedOccurrences)))
+             && setMeta(QStringLiteral("saved_at_ms"),
+                        QString::number(QDateTime::currentMSecsSinceEpoch()));
+    }
+
+    if (!ok) {
+        qWarning() << "[AppCore] 写入本地库失败：" << query.lastError().text();
+        db.rollback();
+        return;
+    }
+    db.commit();
+}
+
+void AppCore::clearDatabase()
+{
+    if (!m_dbReady)
+        return;
+    QSqlDatabase db = QSqlDatabase::database(kDbConnection);
+    QSqlQuery query(db);
+    query.exec(QStringLiteral("DELETE FROM plans"));
+    query.exec(QStringLiteral("DELETE FROM occurrences"));
+    query.exec(QStringLiteral("DELETE FROM records"));
+    query.exec(QStringLiteral("DELETE FROM events"));
+    query.exec(QStringLiteral("DELETE FROM meta"));
+}
+
+bool AppCore::loadRealData(DataSnapshot *data)
+{
+    if (!m_dbReady || !data)
+        return false;
+
+    QSqlDatabase db = QSqlDatabase::database(kDbConnection);
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("SELECT key, value FROM meta")))
+        return false;
+
+    QHash<QString, QString> meta;
+    while (query.next())
+        meta.insert(query.value(0).toString(), query.value(1).toString());
+    if (meta.isEmpty())
+        return false;
+
+    DataSnapshot loaded;
+    loaded.nextPlanId = meta.value(QStringLiteral("next_plan_id"), QStringLiteral("1")).toLongLong();
+    loaded.nextRecordId =
+        meta.value(QStringLiteral("next_record_id"), QStringLiteral("1")).toLongLong();
+    loaded.nextEventSeq =
+        meta.value(QStringLiteral("next_event_seq"), QStringLiteral("1")).toLongLong();
+    loaded.elderName = meta.value(QStringLiteral("elder_name"));
+    loaded.caregiverName = meta.value(QStringLiteral("caregiver_name"));
+    loaded.caregiverPhone = meta.value(QStringLiteral("caregiver_phone"));
+    loaded.day = QDate::fromString(meta.value(QStringLiteral("day")), Qt::ISODate);
+    loaded.startDate = QDate::fromString(meta.value(QStringLiteral("start_date")), Qt::ISODate);
+    loaded.history = jsonToVariantMap(meta.value(QStringLiteral("history")).toUtf8());
+    loaded.deletedOccurrences =
+        jsonToVariantListHash(meta.value(QStringLiteral("deleted_occurrences")).toUtf8());
+    loaded.skippedOccurrences =
+        jsonToVariantListHash(meta.value(QStringLiteral("skipped_occurrences")).toUtf8());
+    m_autoReminders = meta.value(QStringLiteral("auto_reminders"), QStringLiteral("1"))
+                      != QStringLiteral("0");
+
+    if (!query.exec(QStringLiteral("SELECT json FROM plans ORDER BY id")))
+        return false;
+    while (query.next())
+        loaded.plans.append(jsonToVariantMap(query.value(0).toByteArray()));
+
+    if (!query.exec(QStringLiteral("SELECT json FROM occurrences ORDER BY dueTs"))) {
+        // 旧库没有 dueTs 列也没关系：按 id 取，顺序在内存里由 occurrencesToday() 再排。
+        if (!query.exec(QStringLiteral("SELECT json FROM occurrences ORDER BY id")))
+            return false;
+    }
+    while (query.next())
+        loaded.occurrences.append(jsonToVariantMap(query.value(0).toByteArray()));
+
+    if (!query.exec(QStringLiteral("SELECT json FROM records ORDER BY id")))
+        return false;
+    while (query.next())
+        loaded.records.append(jsonToVariantMap(query.value(0).toByteArray()));
+
+    if (!query.exec(QStringLiteral("SELECT json FROM events ORDER BY ts LIMIT 1000")))
+        return false;
+    while (query.next())
+        loaded.events.append(jsonToVariantMap(query.value(0).toByteArray()));
+
+    *data = loaded;
+    return true;
+}
+
+void AppCore::resetStorage()
+{
+    clearDatabase();
+    m_demoMode = false;
+    clearActive();                 // 真实域清空
+    m_realData = snapshot();
+    seedDemo();                    // 演示域重建
+    m_demoData = snapshot();
+    applySnapshot(m_realData);     // 当前回到空的真实域
+
+    emit plansChanged();
+    emit recordsChanged();
+    emit profileChanged();
+    emit occurrencesChanged();
 }

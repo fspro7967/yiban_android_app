@@ -96,6 +96,10 @@ public:
 
     void resetDemo();
 
+    // 清空本地数据库并回到"新装"状态：真实域清空，演示域重建。
+    // 给单测隔离用，也可作为管理后台"清除本机数据"的落点。
+    void resetStorage();
+
 signals:
     void occurrencesChanged();
     void currentChanged();
@@ -146,6 +150,19 @@ private:
     QVariantList occurrencesForDay(const QDate &day) const;
     void fireDue(qint64 occurrenceId);
     void appendEvent(qint64 occurrenceId, const QString &action, const QString &reason);
+
+    // ---- 本地持久化（SQLite）----
+    // 只落真实数据域的整份快照；演示域仍是内存快照（重启即重置，符合 README 的约定）。
+    void openDatabase();
+    void ensureSchema();
+    void schedulePersist();                 // 合并同一轮事件循环里的多次写入
+    void persistNow();
+    void clearDatabase();
+    bool loadRealData(DataSnapshot *data);
+
+    bool m_dbReady = false;
+    bool m_persistPending = false;
+    QString m_dbPath;
 
     int indexOfOccurrence(qint64 id) const;
     int indexOfPlan(qint64 id) const;
