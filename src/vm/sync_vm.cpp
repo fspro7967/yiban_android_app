@@ -316,6 +316,30 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
             if (!rejected.isEmpty())
                 AppCore::instance()->expireEvents(rejected);
             noteSuccess();
+        } else if (status == 409) {
+            // 服务端把状态冲突作为顶层 409 返回（不是 200 里的 rejected 数组）。
+            // 这类事件重传永远不会成功：按 occurrence_id 找出本批事件并标记过期，
+            // 不要走退避重发，否则会像 11/22 那样连续打十几次 /events 全 409。
+            const QJsonObject err = body.value(QLatin1String("error")).toObject();
+            const QString code = err.value(QLatin1String("code")).toString();
+            const qlonglong conflictOccurrence =
+                static_cast<qlonglong>(err.value(QLatin1String("occurrence_id")).toDouble());
+            const QVariantList pending = AppCore::instance()->pendingEvents();
+            QStringList stale;
+            for (const QVariant &entry : pending) {
+                const QVariantMap event = entry.toMap();
+                if (code == QLatin1String("state_conflict") && conflictOccurrence != 0
+                    && event.value(QLatin1String("occurrenceId")).toLongLong() != conflictOccurrence)
+                    continue;
+                const QString eventId = event.value(QLatin1String("eventId")).toString();
+                if (!eventId.isEmpty())
+                    stale.append(eventId);
+            }
+            if (!stale.isEmpty())
+                AppCore::instance()->expireEvents(stale);
+            // 不是网络失败：清掉退避，让剩余事件立刻继续上传。
+            m_failed = false;
+            m_backoffMs = 0;
         } else if (status == 401) {
             // token 失效：不再无限重试，等用户重新配对
             m_failed = true;

@@ -32,6 +32,8 @@ public:
         if (path == QLatin1String("/events") && eventsHandler) {
             if (failEvents)
                 emit failed(id, QStringLiteral("network"));
+            else if (eventsStatus != 200)
+                emit reply(id, eventsStatus, eventsErrorBody);
             else
                 emit reply(id, 200, eventsHandler(body));
         }
@@ -51,6 +53,8 @@ public:
     }
 
     std::function<QJsonObject(const QJsonObject &)> eventsHandler;
+    int eventsStatus = 200;
+    QJsonObject eventsErrorBody;
     std::function<QJsonObject(const QJsonObject &)> alarmHandler;
     std::function<QJsonObject(const QUrlQuery &)> stateHandler;
     std::function<QJsonObject(const QUrlQuery &)> plansHandler;
@@ -104,6 +108,7 @@ private slots:
     void uploadEventsAndAck();
     void sosGoesThroughAlarm();
     void rejectedEventsAreExpired();
+    void topLevelConflictExpiresEvents();
     void pullStateAppliesOccurrence();
     void localFinalStateNotReverted();
     void pullPlansMergesAndDeletes();
@@ -266,6 +271,37 @@ void TestSync::rejectedEventsAreExpired()
     flush(); // 回执是队列投递的，冲洗一轮事件循环让它们落袋
     QCOMPARE(vm->pendingCount(), 0);          // 不再出现在待上传里
     QVERIFY(vm->eventLogCsv().contains(QStringLiteral("confirm"))); // 日志仍可导出
+    delete vm;
+}
+
+void TestSync::topLevelConflictExpiresEvents()
+{
+    // 云端把状态冲突放在顶层 409（见 11/22 日志），不是 200 的 rejected 数组。
+    // 端上必须按 occurrence_id 过期本批事件，不能退避重发造成 /events 409 风暴。
+    const qint64 occurrenceId = makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+
+    QCOMPARE(vm->pendingCount(), 1);
+    client->eventsHandler = [](const QJsonObject &) { return QJsonObject(); };
+    client->eventsStatus = 409;
+    client->eventsErrorBody = QJsonObject {
+        { QLatin1String("error"), QJsonObject {
+            { QLatin1String("code"), QStringLiteral("state_conflict") },
+            { QLatin1String("message"), QStringLiteral("撤销窗口已过（5 秒）") },
+            { QLatin1String("occurrence_id"), static_cast<double>(occurrenceId) },
+            { QLatin1String("server_state"), QStringLiteral("confirmed") },
+            { QLatin1String("server_seq"), 166.0 },
+        } },
+    };
+
+    vm->retrySync();
+    flush();
+    QCOMPARE(vm->pendingCount(), 0); // 冲突事件已从待上传队列摘掉
+    QVERIFY(vm->eventLogCsv().contains(QStringLiteral("confirm")));
+    QCOMPARE(client->posts.size(), 1); // 不再重发
+    QCOMPARE(vm->syncState(), QStringLiteral("idle"));
     delete vm;
 }
 
