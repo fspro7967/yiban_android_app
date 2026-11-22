@@ -68,3 +68,7 @@ build-desktop/
 # Python 编译缓存
 __pycache__/
 *.py[cod]
+
+# 软件产物放 GitHub Release，不进仓库版本历史
+/release/yiban-desktop/
+/release/*.zip
