@@ -69,6 +69,5 @@ build-desktop/
 __pycache__/
 *.py[cod]
 
-# 软件产物放 GitHub Release，不进仓库版本历史
+# 只忽略解压目录；zip 产物直接提交进仓库
 /release/yiban-desktop/
-/release/*.zip

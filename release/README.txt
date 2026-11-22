@@ -6,10 +6,11 @@
 
 下载地址
 --------
-https://github.com/fspro7967/yiban_android_app/releases/download/desktop-20261122/yiban-desktop.zip
+仓库内文件：release/yiban-desktop.zip
+https://github.com/fspro7967/yiban_android_app/blob/feat_B2_platform/release/yiban-desktop.zip
 
-Release 页面
-------------
+Release 镜像（同一个包）
+------------------------
 https://github.com/fspro7967/yiban_android_app/releases/tag/desktop-20261122
 
 运行方法
