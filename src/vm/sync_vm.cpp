@@ -161,14 +161,19 @@ bool SyncVM::canSync() const
 {
     if (!AppSettings::instance()->paired())
         return false;
+    // 离线演示配对时没有令牌；没有令牌就发请求只会换来 401，
+    // 和"待同步"提示混在一起，看不出真正原因。
+    if (AppSettings::instance()->token().trimmed().isEmpty())
+        return false;
     return m_http && m_http->isOnline();
 }
 
 void SyncVM::retrySync()
 {
-    if (!AppSettings::instance()->paired()) {
+    if (!AppSettings::instance()->paired()
+        || AppSettings::instance()->token().trimmed().isEmpty()) {
         emit commandRejected(QStringLiteral("offline"),
-                             facadeErrorText(QStringLiteral("offline")));
+                             QStringLiteral("还没有服务器令牌，请先配对或粘贴令牌"));
         return;
     }
     m_failed = false;

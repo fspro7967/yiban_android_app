@@ -171,6 +171,32 @@ public final class YibanPlatform {
         }
     }
 
+    /** I3：F1 权限页"去设置"——通知页。HyperOS 上系统弹窗一旦被拒就不
+     *  再弹，只能从这里进系统通知设置页让用户手动开。 */
+    public static void openNotificationSettings(Context ctx) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            intent.putExtra(Settings.EXTRA_APP_PACKAGE, ctx.getPackageName());
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+        } catch (Exception ignored) {
+            openAppDetailsSettings(ctx);
+        }
+    }
+
+    /** I3：电话/短信/麦克风这类运行时权限被长期拒绝后，系统不再弹窗，
+     *  统一落到应用详情页，让用户在权限里手动放行。 */
+    public static void openAppDetailsSettings(Context ctx) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + ctx.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            ctx.startActivity(intent);
+        } catch (Exception ignored) {
+            // 没有设置页就什么都不做，C++ 侧返回 true 只是表示识别了这个 key
+        }
+    }
+
     /**
      * root 下自助放行 HyperOS 的"后台弹出界面 / 悬浮窗"。
      *

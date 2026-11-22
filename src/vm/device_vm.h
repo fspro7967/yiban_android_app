@@ -3,7 +3,9 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QStringList>
+#include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <QtQml/qqmlregistration.h>
 
 class QTextToSpeech;
@@ -29,6 +31,8 @@ class DeviceVM : public QObject
     Q_PROPERTY(bool audioReady READ audioReady NOTIFY audioChanged)
     Q_PROPERTY(bool speaking READ speaking NOTIFY audioChanged)
     Q_PROPERTY(QStringList permissions READ permissions NOTIFY permissionChanged)
+    // I3：逐项权限诊断 {key,label,granted,canOpenSettings}，F1 权限页直接当 model。
+    Q_PROPERTY(QVariantList permissionDiagnostics READ permissionDiagnostics NOTIFY permissionChanged)
     Q_PROPERTY(bool kioskActive READ kioskActive NOTIFY kioskChanged)
     Q_PROPERTY(bool voiceEnabled READ voiceEnabled WRITE setVoiceEnabled NOTIFY voiceChanged)
     Q_PROPERTY(bool nightQuiet READ nightQuiet WRITE setNightQuiet NOTIFY voiceChanged)
@@ -37,6 +41,8 @@ class DeviceVM : public QObject
     Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY networkChanged)
     Q_PROPERTY(QString wifiName READ wifiName NOTIFY networkChanged)
     Q_PROPERTY(bool networkOnline READ networkOnline NOTIFY networkChanged)
+    // 是否已经拿到令牌（配对成功或手工粘贴）；管理页据此提示要不要重新配对。
+    Q_PROPERTY(bool hasToken READ hasToken NOTIFY tokenChanged)
     // 最近的网络交换日志（最多 80 行，格式见 http_client.h 的 NetworkLog）。
     // 管理页直接绑定它就能看到"发出去了没有、重试了几次、耗了多久"。
     Q_PROPERTY(QStringList networkLog READ networkLog NOTIFY networkLogChanged)
@@ -50,6 +56,7 @@ public:
     bool audioReady() const;
     bool speaking() const;
     QStringList permissions() const;
+    QVariantList permissionDiagnostics() const { return m_permissionDiagnostics; }
     bool kioskActive() const { return m_kioskActive; }
     bool voiceEnabled() const { return m_voiceEnabled; }
     void setVoiceEnabled(bool on);
@@ -60,12 +67,19 @@ public:
     QString serverUrl() const { return m_serverUrl; }
     QString wifiName() const { return m_wifiName; }
     bool networkOnline() const { return m_networkOnline; }
+    bool hasToken() const { return m_hasToken; }
     QStringList networkLog() const { return m_networkLog; }
     bool demoMode() const;
     void setDemoMode(bool on);
 
     // 管理后台：保存服务器地址，并落盘（重启后仍然生效）。
     Q_INVOKABLE bool saveNetwork(const QString &serverUrl);
+    // 管理后台：手工填入服务端签发的令牌。配对码失效时的兜底通道。
+    // 传空串表示清除令牌（同时解除配对）。
+    Q_INVOKABLE bool saveToken(const QString &token);
+    // 管理后台：真实探测 /v1/state，结果用 connectionTested 回给页面。
+    // 假连接一旦点下去就报"正常"，联调时根本分不清是没发出去还是服务器拒了。
+    Q_INVOKABLE void testConnection();
     // 管理后台：清空网络日志（发一版对比日志之前先清一次，看起来干净）
     Q_INVOKABLE void clearNetworkLog();
 
@@ -83,6 +97,8 @@ public:
     // 设置页"检查权限"入口用；桌面构建是空操作
     Q_INVOKABLE void requestNotificationPermission();
     Q_INVOKABLE void requestExactAlarmPermission();
+    // I3：按 key 跳到对应系统设置页，返回 false 表示桌面构建或不认识的 key。
+    Q_INVOKABLE bool openSystemSettings(const QString &key);
     // Android 14+ 的"全屏通知"开关：不开的话锁屏只响不亮
     Q_INVOKABLE void requestFullScreenPermission();
 
@@ -94,6 +110,9 @@ signals:
     void voiceChanged();
     void networkChanged();
     void networkLogChanged();
+    void tokenChanged();
+    // 连接自检结果：ok + 面向管理员的中文结论（含具体失败原因）。
+    void connectionTested(bool ok, const QString &message);
     void demoModeChanged();
     void sosTriggered(int level);
     void commandRejected(const QString &code, const QString &message);
@@ -107,6 +126,8 @@ private:
     void onReminderDue(const QVariantMap &occurrence);
     void handlePairReply(quint64 requestId, int status, const QJsonObject &body);
     void handlePairFailed(quint64 requestId, const QString &code);
+    void handleTestReply(quint64 requestId, int status, const QJsonObject &body);
+    void handleTestFailed(quint64 requestId, const QString &code);
     void finishPair(bool ok, const QString &role, const QString &reason);
 
     QTextToSpeech *m_tts = nullptr;   // 仅桌面用：Android 上走系统 TTS（Platform::speak）
@@ -116,8 +137,11 @@ private:
     AlarmTtsRenderer *m_alarmTts = nullptr; // Android：离线 TTS 预渲染到点播报 WAV
 
     QStringList m_permissionCache;
+    QVariantList m_permissionDiagnostics;
     QStringList m_networkLog;
     quint64 m_pairRequestId = 0;
+    quint64 m_testRequestId = 0;
+    bool m_hasToken = false;
 
     bool m_quietActive = false;
     bool m_paired = false;

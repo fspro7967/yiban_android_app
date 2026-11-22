@@ -11,6 +11,9 @@
 //
 // 键名固定且带前缀，方便复现问题时直接看：
 //   adb shell run-as com.yiban.elder ls shared_prefs
+// 管理页填进来的地址统一补 /v1、去掉尾部斜杠；不合法返回空串。
+QString normalizeServerUrl(const QString &url);
+
 class AppSettings
 {
 public:

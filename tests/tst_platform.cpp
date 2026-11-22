@@ -3,6 +3,8 @@
 #include <QDateTime>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QVariantList>
+#include <QVariantMap>
 
 #include "app_settings.h"
 #include "platform.h"
@@ -24,6 +26,7 @@ class PlatformTest : public QObject
 private slots:
     void initTestCase();
     void desktopPlatformIsNoop();
+    void permissionDiagnosticsShape();
     void settingsRoundTrip();
     void deviceIdIsStable();
     void pairingStatePersists();
@@ -69,6 +72,31 @@ void PlatformTest::desktopPlatformIsNoop()
     Platform::exitKiosk();
     Platform::requestPermission(Platform::Permission::Notifications);
     Platform::requestIgnoreBatteryOptimizations();
+}
+
+void PlatformTest::permissionDiagnosticsShape()
+{
+    // I3：F1 权限页直接拿这个当 model，每项必须有 key/label/granted/canOpenSettings。
+    const QVariantList list = Platform::permissionDiagnostics();
+    QCOMPARE(list.size(), 7);
+    QStringList keys;
+    for (const QVariant &entry : list) {
+        const QVariantMap item = entry.toMap();
+        const QString key = item.value(QStringLiteral("key")).toString();
+        QVERIFY(!key.isEmpty());
+        QVERIFY(!item.value(QStringLiteral("label")).toString().isEmpty());
+        QVERIFY(item.contains(QStringLiteral("granted")));
+        QVERIFY(item.contains(QStringLiteral("canOpenSettings")));
+        keys << key;
+    }
+    QVERIFY(keys.contains(QStringLiteral("notifications")));
+    QVERIFY(keys.contains(QStringLiteral("exactAlarm")));
+    QVERIFY(keys.contains(QStringLiteral("fullscreenIntent")));
+    QVERIFY(keys.contains(QStringLiteral("battery")));
+
+    // 桌面构建没有系统设置页：诊断全绿，但跳转一律安全返回 false。
+    QVERIFY(!Platform::openSystemSettings(QStringLiteral("notifications")));
+    QVERIFY(!Platform::openSystemSettings(QStringLiteral("unknown")));
 }
 
 void PlatformTest::settingsRoundTrip()

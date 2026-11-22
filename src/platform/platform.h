@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 
 // 平台层（B2）：全仓库唯一允许碰 Android 系统服务的地方。
 //
@@ -34,8 +35,17 @@ void requestPermission(Permission p);
 // 桌面构建返回全部三项（demo 里没有权限概念，全给）。
 QStringList grantedLabels();
 
+// I3：逐项诊断结果，给 F1 权限页每项画 ✅/❌ 和"去设置"。
+// 每项形状：{key, label, granted, canOpenSettings}；桌面构建全 granted、不可跳转。
+QVariantList permissionDiagnostics();
+// 按 key 跳到对应系统设置页（通知/精确闹钟/全屏提醒/电池白名单/应用详情）。
+// 返回 false 表示 key 不认识或桌面构建没有系统设置可跳。
+bool openSystemSettings(const QString &key);
+
 bool canScheduleExactAlarms();
 void openExactAlarmSettings();
+// 查询本应用是否已在电池优化白名单里（诊断项用）。
+bool isIgnoringBatteryOptimizations();
 // 引导用户把本应用加入电池优化白名单，否则部分机型会杀后台导致闹钟不响。
 void requestIgnoreBatteryOptimizations();
 

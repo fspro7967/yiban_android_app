@@ -15,6 +15,17 @@ Item {
 
     property string contactError: ""
     property string networkError: ""
+    property bool connectionOk: false
+
+    // 连接自检结果直接写在这里，管理员不用翻 logcat 才知道发出去没有。
+    Connections {
+        target: DeviceVM
+        function onConnectionTested(ok, message) {
+            page.connectionOk = ok
+            page.networkError = message
+            Notify.info(message)
+        }
+    }
     // 电话格式问题：边输边查，但只在用户点过保存或输入框失焦后才标红，避免一敲就报错。
     property bool phoneTouched: false
     readonly property string phoneProblem: ProfileVM.phoneProblem(contactPhone.text)
@@ -48,11 +59,19 @@ Item {
     }
 
     function saveNetwork() {
-        if (DeviceVM.saveNetwork(serverUrl.text)) {
-            page.networkError = ""
-        } else {
-            page.networkError = "服务器地址要以 https:// 开头"
+        if (!DeviceVM.saveNetwork(serverUrl.text)) {
+            page.networkError = "服务器地址要以 http:// 或 https:// 开头"
+            return
         }
+        if (serverToken.text.trim().length > 0) {
+            if (!DeviceVM.saveToken(serverToken.text)) {
+                page.networkError = "令牌格式不对，请复制完整的 ses-… 令牌"
+                return
+            }
+            serverToken.text = ""
+        }
+        page.networkError = "已保存。配对码失效时可粘贴服务器签发的令牌。"
+        page.connectionOk = false
     }
 
     ColumnLayout {
@@ -260,12 +279,34 @@ Item {
                             inputMethodHints: Qt.ImhUrlCharactersOnly
                         }
 
+                        Field {
+                            id: serverToken
+                            width: parent.width
+                            theme: page.theme
+                            label: "访问令牌（可选）"
+                            placeholder: "ses-… 配对码不可用时使用"
+                            echoMode: TextInput.Password
+                            text: ""
+                            fontSize: page.theme.px(20)
+                            maxLength: 256
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: DeviceVM.hasToken ? page.theme.primary : page.theme.amberInk
+                            text: DeviceVM.hasToken ? "已配置令牌（保存后重启仍然有效）"
+                                                    : "当前没有令牌：请先配对，或粘贴管理员给的令牌"
+                            wrapMode: Text.WordWrap
+                        }
+
                         AppText {
                             width: parent.width
                             theme: page.theme
                             role: "label"
                             color: page.theme.inkSoft
-                            text: "演示版只保存在内存里，重启后恢复默认地址。"
+                            text: "不带 /v1 也可以，程序会自动补齐。"
                             wrapMode: Text.WordWrap
                         }
 
@@ -274,7 +315,7 @@ Item {
                             visible: page.networkError.length > 0
                             theme: page.theme
                             role: "label"
-                            color: page.theme.danger
+                            color: page.connectionOk ? page.theme.primary : page.theme.danger
                             text: page.networkError
                             wrapMode: Text.WordWrap
                         }
@@ -285,7 +326,11 @@ Item {
                             theme: page.theme
                             text: "测试连接"
                             kind: "secondary"
-                            onClicked: Notify.info("网络连接正常（演示版）")
+                            onClicked: {
+                                page.connectionOk = false
+                                page.networkError = "正在测试…"
+                                DeviceVM.testConnection()
+                            }
                         }
 
                         AppButton {

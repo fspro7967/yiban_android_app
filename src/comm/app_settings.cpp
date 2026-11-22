@@ -20,6 +20,21 @@ constexpr auto kPlansSeq = "sync/plansSeq";
 constexpr auto kDefaultServerUrl = "http://101.245.109.50:8000/v1";
 } // namespace
 
+QString normalizeServerUrl(const QString &url)
+{
+    QString trimmed = url.trimmed();
+    if (!trimmed.startsWith(QStringLiteral("https://"))
+        && !trimmed.startsWith(QStringLiteral("http://")))
+        return QString();
+    if (trimmed.length() < 12 || trimmed.length() > 200)
+        return QString();
+    while (trimmed.endsWith(QLatin1Char('/')))
+        trimmed.chop(1);
+    if (!trimmed.endsWith(QStringLiteral("/v1")))
+        trimmed += QStringLiteral("/v1");
+    return trimmed;
+}
+
 AppSettings *AppSettings::instance()
 {
     static AppSettings settings;

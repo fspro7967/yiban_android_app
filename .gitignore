@@ -64,3 +64,7 @@ compile_commands.json
 .gradle-home/
 .android-home/
 build-desktop/
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]

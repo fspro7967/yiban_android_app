@@ -108,6 +108,8 @@ private slots:
     void localFinalStateNotReverted();
     void pullPlansMergesAndDeletes();
     void cursorPersistedAcrossCycles();
+    void syncRequiresToken();
+    void serverUrlNormalized();
 
 private:
     SyncVM *makeSync(FakeHttpClient **fakeOut);
@@ -127,6 +129,7 @@ void TestSync::init()
     // 用例之间要互相擦干净）
     AppSettings *settings = AppSettings::instance();
     settings->setPairing(true, QStringLiteral("elder"));
+    settings->setToken(QStringLiteral("test-token-123456"));
     settings->setLastSyncTs(0);
     settings->setStateSeq(0);
     settings->setPlansSeq(0);
@@ -438,6 +441,33 @@ void TestSync::cursorPersistedAcrossCycles()
     QVERIFY(seenSince.toInt() >= 41);
     QCOMPARE(AppSettings::instance()->stateSeq(), qint64(47));
     delete vm;
+}
+
+void TestSync::syncRequiresToken()
+{
+    // 离线演示配对过但没拿令牌时，不能再发请求去撞 401。
+    AppSettings::instance()->clearToken();
+    makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+
+    QCOMPARE(vm->syncState(), QStringLiteral("offline"));
+    vm->retrySync();
+    flush();
+    QVERIFY(client->posts.isEmpty());
+    QCOMPARE(vm->pendingCount(), 1); // 事件留在本地等令牌
+    delete vm;
+}
+
+void TestSync::serverUrlNormalized()
+{
+    // 管理页填根地址也能用：统一补 /v1，否则 /events 会打到根路径 404。
+    QCOMPARE(normalizeServerUrl(QStringLiteral("http://101.245.109.50:8000")),
+             QStringLiteral("http://101.245.109.50:8000/v1"));
+    QCOMPARE(normalizeServerUrl(QStringLiteral("http://101.245.109.50:8000/v1/")),
+             QStringLiteral("http://101.245.109.50:8000/v1"));
+    QCOMPARE(normalizeServerUrl(QStringLiteral("101.245.109.50:8000")), QString());
 }
 
 QTEST_MAIN(TestSync)
