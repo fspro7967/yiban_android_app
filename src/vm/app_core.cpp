@@ -1529,11 +1529,17 @@ bool AppCore::correctRecord(qint64 recordId, const QVariantMap &patch, QString *
         if (rec.value(QStringLiteral("recordId")).toLongLong() != recordId)
             continue;
         for (auto it = patch.constBegin(); it != patch.constEnd(); ++it) {
-            if (it.key() == QStringLiteral("recordId") || it.key() == QStringLiteral("type"))
+            // 身份与同步字段只归本类管，修正补丁不能改
+            if (it.key() == QStringLiteral("recordId") || it.key() == QStringLiteral("type")
+                || it.key() == QStringLiteral("serverRecordId")
+                || it.key() == QStringLiteral("syncRev")
+                || it.key() == QStringLiteral("syncedRev"))
                 continue;
             rec.insert(it.key(), it.value());
         }
         rec[QStringLiteral("correctedFrom")] = recordId;
+        // 版本 +1：已上传的记录据此补一次 PATCH；还在上传途中的，回执后也能发现落后
+        rec[QStringLiteral("syncRev")] = rec.value(QStringLiteral("syncRev")).toLongLong() + 1;
         m_records[i] = rec;
         logOperation(QStringLiteral("记录"),
                      QStringLiteral("修正记录：%1")
@@ -1775,6 +1781,95 @@ void AppCore::expireEvents(const QStringList &eventIds)
     }
     if (changed)
         emit eventsChanged();
+}
+
+namespace {
+
+bool recordNeedsUpload(const QVariantMap &rec)
+{
+    const qint64 serverId = rec.value(QStringLiteral("serverRecordId")).toLongLong();
+    if (serverId == 0)
+        return true;
+    return serverId > 0
+        && rec.value(QStringLiteral("syncRev")).toLongLong()
+            > rec.value(QStringLiteral("syncedRev")).toLongLong();
+}
+
+} // namespace
+
+QVariantList AppCore::pendingRecords() const
+{
+    QVariantList out;
+    if (m_demoMode)
+        return out;
+    for (const QVariant &entry : m_records) {
+        QVariantMap rec = entry.toMap();
+        if (!recordNeedsUpload(rec))
+            continue;
+        const QString key = QStringLiteral("record:%1:%2")
+                                .arg(rec.value(QStringLiteral("recordId")).toLongLong())
+                                .arg(rec.value(QStringLiteral("at")).toLongLong());
+        rec[QStringLiteral("clientId")] =
+            QUuid::createUuidV5(kEventNamespace, key).toString(QUuid::WithoutBraces);
+        out.append(rec);
+    }
+    return out;
+}
+
+int AppCore::pendingRecordCount() const
+{
+    if (m_demoMode)
+        return 0;
+    int count = 0;
+    for (const QVariant &entry : m_records) {
+        if (recordNeedsUpload(entry.toMap()))
+            ++count;
+    }
+    return count;
+}
+
+void AppCore::markRecordSynced(qint64 recordId, qint64 serverRecordId, qint64 rev)
+{
+    for (int i = 0; i < m_records.size(); ++i) {
+        QVariantMap rec = m_records.at(i).toMap();
+        if (rec.value(QStringLiteral("recordId")).toLongLong() != recordId)
+            continue;
+        if (serverRecordId > 0 && rec.value(QStringLiteral("serverRecordId")).toLongLong() <= 0)
+            rec[QStringLiteral("serverRecordId")] = serverRecordId;
+        if (rev > rec.value(QStringLiteral("syncedRev")).toLongLong())
+            rec[QStringLiteral("syncedRev")] = rev;
+        m_records[i] = rec;
+        emit recordsChanged();
+        return;
+    }
+    // 找不到：上传途中被撤销了（服务端暂无删除接口，那条会留在服务端）
+}
+
+void AppCore::rejectRecord(qint64 recordId)
+{
+    for (int i = 0; i < m_records.size(); ++i) {
+        QVariantMap rec = m_records.at(i).toMap();
+        if (rec.value(QStringLiteral("recordId")).toLongLong() != recordId)
+            continue;
+        rec[QStringLiteral("serverRecordId")] = -1;
+        m_records[i] = rec;
+        emit recordsChanged();
+        return;
+    }
+}
+
+void AppCore::forgetServerRecord(qint64 recordId)
+{
+    for (int i = 0; i < m_records.size(); ++i) {
+        QVariantMap rec = m_records.at(i).toMap();
+        if (rec.value(QStringLiteral("recordId")).toLongLong() != recordId)
+            continue;
+        rec[QStringLiteral("serverRecordId")] = 0;
+        rec[QStringLiteral("syncedRev")] = 0;
+        m_records[i] = rec;
+        emit recordsChanged();
+        return;
+    }
 }
 
 void AppCore::applyServerPlans(const QVariantList &serverPlans)

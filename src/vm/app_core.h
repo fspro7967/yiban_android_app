@@ -46,6 +46,22 @@ public:
     // 服务端明确拒绝的事件（如过时状态）标记过期（serverSeq = -1）：
     // 不再重传，但留在日志里可导出排查。
     void expireEvents(const QStringList &eventIds);
+
+    // ---- 记录上传队列（规范 §8：POST / PATCH /v1/records，不进事件流）----
+    // 每条记录自带同步字段：
+    //   serverRecordId：0 = 还没上传，>0 = 服务端 record_id，-1 = 服务端拒收（不再重传）
+    //   syncRev / syncedRev：本地每修正一次 syncRev+1；服务端已拿到的版本记在 syncedRev
+    // 待上传 = serverRecordId == 0（要 POST），或 >0 且 syncRev > syncedRev（要 PATCH）。
+    // 演示数据域一律不上传：演示记录不能混进真实家庭的服务端数据。
+    // 返回的每项另带 clientId：按 recordId + at 派生的稳定 UUID，POST 重试时服务端据此去重。
+    QVariantList pendingRecords() const;
+    int pendingRecordCount() const;
+    // 服务端已收到 rev 版本：首次 POST 回执带上 serverRecordId；PATCH 回执传 0 沿用原值。
+    void markRecordSynced(qint64 recordId, qint64 serverRecordId, qint64 rev);
+    // 服务端 4xx 明确拒收：标 -1，不再重传。
+    void rejectRecord(qint64 recordId);
+    // PATCH 回 404（服务端没有这条）：清掉 serverRecordId，下一轮重新 POST。
+    void forgetServerRecord(qint64 recordId);
     // 服务端下发（snake→camel 已由 SyncVM 转好）：按 planId 合并，
     // 版本 >= 本地才接受（规范 §9：冲突以服务端为准）。
     void applyServerPlans(const QVariantList &serverPlans);

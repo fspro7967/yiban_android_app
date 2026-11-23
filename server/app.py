@@ -148,6 +148,7 @@ class Store:
                     type TEXT, value REAL, unit TEXT,
                     ts INTEGER NOT NULL,
                     updated_seq INTEGER DEFAULT 0,
+                    client_id TEXT DEFAULT '',
                     PRIMARY KEY(household_id, record_id)
                 );
                 CREATE TABLE IF NOT EXISTS alarms(
@@ -161,6 +162,10 @@ class Store:
                 );
                 """
             )
+            # 旧库补列：records.client_id（端上 POST 重试去重用）
+            cols = {r["name"] for r in self.db.execute("PRAGMA table_info(records)")}
+            if "client_id" not in cols:
+                self.db.execute("ALTER TABLE records ADD COLUMN client_id TEXT DEFAULT ''")
 
     # ---- 序号 ----
 
@@ -427,7 +432,16 @@ class Store:
     # ---- 记录 / 告警 ----
 
     def add_record(self, household_id: int, rec: dict):
+        client_id = str(rec.get("client_id") or "")
         with self.lock, self.db:
+            if client_id:
+                # 端上 POST 超时重试：同一 client_id 只记一条，回原来的 id
+                dup = self.db.execute(
+                    "SELECT record_id, updated_seq FROM records"
+                    " WHERE household_id=? AND client_id=?",
+                    (household_id, client_id)).fetchone()
+                if dup:
+                    return dup["record_id"], dup["updated_seq"]
             rid = self.db.execute("SELECT next_record_id FROM households WHERE id=?",
                                   (household_id,)).fetchone()["next_record_id"]
             self.db.execute("UPDATE households SET next_record_id=? WHERE id=?",
@@ -435,9 +449,10 @@ class Store:
             seq = self.bump_seq(household_id)
             self.db.execute(
                 "INSERT INTO records(household_id, record_id, type, value, unit, ts,"
-                " updated_seq) VALUES (?,?,?,?,?,?,?)",
+                " updated_seq, client_id) VALUES (?,?,?,?,?,?,?,?)",
                 (household_id, rid, rec.get("type", ""), rec.get("value", 0),
-                 rec.get("unit", ""), rec.get("ts") or now_ms(), seq))
+                 rec.get("unit", ""), rec.get("at") or rec.get("ts") or now_ms(), seq,
+                 client_id))
         return rid, seq
 
     def patch_record(self, household_id: int, record_id: int, patch: dict):
@@ -449,10 +464,12 @@ class Store:
                 return None
             seq = self.bump_seq(household_id)
             self.db.execute(
-                "UPDATE records SET type=?, value=?, unit=?, updated_seq=?"
+                "UPDATE records SET type=?, value=?, unit=?, ts=?, updated_seq=?"
                 " WHERE household_id=? AND record_id=?",
                 (patch.get("type", cur["type"]), patch.get("value", cur["value"]),
-                 patch.get("unit", cur["unit"]), seq, household_id, record_id))
+                 patch.get("unit", cur["unit"]),
+                 patch.get("at") or patch.get("ts") or cur["ts"], seq,
+                 household_id, record_id))
         return seq
 
     def add_alarm(self, household_id: int, body: dict):

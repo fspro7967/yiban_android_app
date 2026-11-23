@@ -69,6 +69,24 @@ QJsonObject eventToServer(const QVariantMap &event)
     };
 }
 
+// 记录：时间字段叫 at（毫秒），和契约 v0.1 及云端 v1_adapter._record_write 一致——
+// 云端只认 at，发成 ts 会被当成缺省、落成上传时刻。
+// client_id 供服务端在 POST 重试时去重（本地联调服务端支持，云端暂不认）。
+QJsonObject recordToServer(const QVariantMap &rec, bool forPatch)
+{
+    QJsonObject body {
+        { QLatin1String("value"), rec.value(QStringLiteral("value")).toDouble() },
+        { QLatin1String("unit"), rec.value(QStringLiteral("unit")).toString() },
+        { QLatin1String("at"), rec.value(QStringLiteral("at")).toLongLong() },
+    };
+    if (!forPatch) {
+        body.insert(QLatin1String("type"), rec.value(QStringLiteral("type")).toString());
+        body.insert(QLatin1String("client_id"), rec.value(QStringLiteral("clientId")).toString());
+        body.insert(QLatin1String("device_id"), AppSettings::instance()->deviceId());
+    }
+    return body;
+}
+
 QVariantList ackedFromServer(const QJsonArray &accepted)
 {
     QVariantList out;
@@ -92,27 +110,29 @@ SyncVM::SyncVM(QObject *parent)
     m_http = m_network = new NetworkHttpClient(this);
 
     m_stateTimer.setInterval(15 * 1000);
-    connect(&m_stateTimer, &QTimer::timeout, this, &SyncVM::pullState);
+    connect(&m_stateTimer, &QTimer::timeout, this, &SyncVM::heartbeat);
     m_planTimer.setInterval(60 * 1000);
     connect(&m_planTimer, &QTimer::timeout, this, &SyncVM::pullPlans);
     m_uploadBackoff.setSingleShot(true);
     connect(&m_uploadBackoff, &QTimer::timeout, this, &SyncVM::uploadPending);
+    m_recordBackoff.setSingleShot(true);
+    connect(&m_recordBackoff, &QTimer::timeout, this, &SyncVM::uploadRecords);
 
     AppCore *core = AppCore::instance();
     // 队列投递：ack 回调里 markEventsSynced 会再发 eventsChanged，
     // 直连会在同一栈帧里递归发起下一轮上传。
     connect(core, &AppCore::eventsChanged, this, &SyncVM::uploadPending,
             Qt::QueuedConnection);
+    connect(core, &AppCore::recordsChanged, this, &SyncVM::uploadRecords,
+            Qt::QueuedConnection);
+    // pendingCount 挂在 syncChanged 上：事件入队/ack、记录增改都要刷新，
+    // 否则离线时按 SOS、记一杯水，管理页的"待上传"数字不动。
+    connect(core, &AppCore::eventsChanged, this, &SyncVM::syncChanged);
+    connect(core, &AppCore::recordsChanged, this, &SyncVM::syncChanged);
     connect(core, &AppCore::occurrencesChanged, this, &SyncVM::syncChanged);
     connect(core, &AppCore::toast, this, &SyncVM::toast);
 
-    // 回执必须异步处理（Qt::QueuedConnection 强制）：HttpClient 合约规定
-    // reply/failed 不得在 postJson/getJson 调用栈内同步发出——同步发出时
-    // requestId 还没赋给 m_*Req，回执会被整个丢掉。
-    if (HttpClient *client = qobject_cast<HttpClient *>(m_network)) {
-        connect(client, &HttpClient::reply, this, &SyncVM::onReply, Qt::QueuedConnection);
-        connect(client, &HttpClient::failed, this, &SyncVM::onFailed, Qt::QueuedConnection);
-    }
+    connectClient(m_network);
     m_stateTimer.start();
     m_planTimer.start();
 }
@@ -127,15 +147,51 @@ void SyncVM::setHttpClient(HttpClient *client)
     if (!qobject_cast<NetworkHttpClient *>(client))
         m_network = nullptr; // 假实现：token 读取交给假实现自己
     client->setParent(this);
+    connectClient(client);
+}
+
+void SyncVM::connectClient(HttpClient *client)
+{
+    // 回执必须异步处理（Qt::QueuedConnection 强制）：HttpClient 合约规定
+    // reply/failed 不得在 postJson/getJson 调用栈内同步发出——同步发出时
+    // requestId 还没赋给 m_*Req，回执会被整个丢掉。
     connect(client, &HttpClient::reply, this, &SyncVM::onReply, Qt::QueuedConnection);
     connect(client, &HttpClient::failed, this, &SyncVM::onFailed, Qt::QueuedConnection);
+    // 队列投递：系统网络回调里不直接发请求
+    connect(client, &HttpClient::onlineChanged, this, &SyncVM::onOnlineChanged,
+            Qt::QueuedConnection);
+}
+
+void SyncVM::onOnlineChanged()
+{
+    // 只认当前在用的客户端（测试换成假实现后，真实客户端的通知不算数）
+    if (sender() && sender() != m_http)
+        return;
+    emit syncChanged(); // syncState 可能在 offline 与其他状态之间切换
+    if (!canSync())
+        return;
+    // 刚恢复联网：断网期间攒下的退避没有意义，清掉立刻补传
+    m_uploadBackoff.stop();
+    m_recordBackoff.stop();
+    m_backoffMs = 0;
+    m_recordBackoffMs = 0;
+    cycle();
+}
+
+void SyncVM::heartbeat()
+{
+    if (!m_uploadBackoff.isActive())
+        uploadPending();
+    if (!m_recordBackoff.isActive())
+        uploadRecords();
+    pullState();
 }
 
 QString SyncVM::computeState() const
 {
     if (!canSync())
         return QStringLiteral("offline");
-    if (m_uploadReq || m_alarmReq || m_stateReq || m_plansReq)
+    if (m_uploadReq || m_alarmReq || m_recordReq || m_stateReq || m_plansReq)
         return QStringLiteral("syncing");
     if (m_failed)
         return QStringLiteral("error");
@@ -154,7 +210,8 @@ qint64 SyncVM::lastSyncTs() const
 
 int SyncVM::pendingCount() const
 {
-    return AppCore::instance()->pendingEvents().size();
+    return AppCore::instance()->pendingEvents().size()
+        + AppCore::instance()->pendingRecordCount();
 }
 
 bool SyncVM::canSync() const
@@ -190,6 +247,7 @@ void SyncVM::retrySync()
 void SyncVM::cycle()
 {
     uploadPending();
+    uploadRecords();
     pullState();
     pullPlans();
 }
@@ -235,6 +293,26 @@ void SyncVM::uploadPending()
     emit syncChanged();
 }
 
+void SyncVM::uploadRecords()
+{
+    if (m_recordReq || !canSync())
+        return;
+    const QVariantList pending = AppCore::instance()->pendingRecords();
+    if (pending.isEmpty())
+        return;
+
+    const QVariantMap rec = pending.first().toMap();
+    const qint64 serverId = rec.value(QStringLiteral("serverRecordId")).toLongLong();
+    m_recordLocalId = rec.value(QStringLiteral("recordId")).toLongLong();
+    m_recordRev = rec.value(QStringLiteral("syncRev")).toLongLong();
+    m_recordIsPatch = serverId > 0;
+    m_recordReq = m_recordIsPatch
+        ? m_http->patchJson(QStringLiteral("/records/%1").arg(serverId),
+                            recordToServer(rec, true))
+        : m_http->postJson(QStringLiteral("/records"), recordToServer(rec, false));
+    emit syncChanged();
+}
+
 void SyncVM::pullState()
 {
     if (m_stateReq || !canSync())
@@ -257,6 +335,70 @@ void SyncVM::pullPlans()
     emit syncChanged();
 }
 
+void SyncVM::scheduleRecordRetry()
+{
+    m_recordBackoffMs =
+        m_recordBackoffMs <= 0 ? 1000 : qMin(kMaxBackoffMs, m_recordBackoffMs * 2);
+    m_recordBackoff.start(m_recordBackoffMs);
+}
+
+void SyncVM::onUnauthorized()
+{
+    m_failed = true;
+    AppSettings::instance()->clearToken();
+    AppSettings::instance()->setPairing(false, QString());
+    emit commandRejected(QStringLiteral("offline"),
+                         QStringLiteral("登录已失效，请重新配对"));
+}
+
+void SyncVM::onRecordReply(int status, const QJsonObject &body)
+{
+    const qint64 localId = m_recordLocalId;
+    const bool wasPatch = m_recordIsPatch;
+    m_recordReq = 0;
+    m_recordLocalId = 0;
+
+    if (status >= 200 && status < 300) {
+        const qint64 serverId =
+            static_cast<qint64>(body.value(QLatin1String("record_id")).toDouble());
+        if (!wasPatch && serverId <= 0) {
+            // 新建回执没给 record_id：以后没法 PATCH，当失败退避重传
+            // （POST 带 client_id，服务端去重，不会记两条）
+            m_failed = true;
+            scheduleRecordRetry();
+            emit syncChanged();
+            return;
+        }
+        AppCore::instance()->markRecordSynced(localId, wasPatch ? 0 : serverId, m_recordRev);
+        m_recordBackoffMs = 0;
+        noteSuccess();
+    } else if (status == 401) {
+        onUnauthorized();
+        emit syncChanged();
+        return;
+    } else if (wasPatch && status == 404) {
+        // 服务端没有这条（换了服务器/库被清）：改回重新 POST
+        AppCore::instance()->forgetServerRecord(localId);
+    } else if (!wasPatch && (status == 404 || status == 405)) {
+        // POST 404/405 只能是服务端还没这个接口：不能当拒收（会把积压记录
+        // 全标 -1 永久丢掉），留在队列里退避，等服务端补上
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    } else if (status >= 400 && status < 500 && status != 408 && status != 429) {
+        // 其余 4xx 是服务端明确拒收，重传不会变结果
+        AppCore::instance()->rejectRecord(localId);
+    } else {
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
+    emit syncChanged();
+    uploadRecords(); // 本地状态已同步更新，直接接着传下一条
+}
+
 void SyncVM::scheduleUploadRetry()
 {
     m_backoffMs = m_backoffMs <= 0 ? 1000 : qMin(kMaxBackoffMs, m_backoffMs * 2);
@@ -277,6 +419,11 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
         return;
     const bool ok = status >= 200 && status < 300;
 
+    if (requestId == m_recordReq) {
+        onRecordReply(status, body);
+        return;
+    }
+
     if (requestId == m_alarmReq) {
         m_alarmReq = 0;
         const QString eventId = m_alarmEventId;
@@ -294,11 +441,7 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
             });
             noteSuccess();
         } else if (status == 401) {
-            m_failed = true;
-            AppSettings::instance()->clearToken();
-            AppSettings::instance()->setPairing(false, QString());
-            emit commandRejected(QStringLiteral("offline"),
-                                 QStringLiteral("登录已失效，请重新配对"));
+            onUnauthorized();
         } else {
             m_failed = true;
             scheduleUploadRetry();
@@ -348,11 +491,7 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
             m_backoffMs = 0;
         } else if (status == 401) {
             // token 失效：不再无限重试，等用户重新配对
-            m_failed = true;
-            AppSettings::instance()->clearToken();
-            AppSettings::instance()->setPairing(false, QString());
-            emit commandRejected(QStringLiteral("offline"),
-                                 QStringLiteral("登录已失效，请重新配对"));
+            onUnauthorized();
         } else {
             m_failed = true;
             scheduleUploadRetry();
@@ -405,6 +544,14 @@ void SyncVM::onFailed(quint64 requestId, const QString &code)
         m_alarmEventId.clear();
         m_failed = true;
         scheduleUploadRetry();
+        emit syncChanged();
+        return;
+    }
+    if (requestId != 0 && requestId == m_recordReq) {
+        m_recordReq = 0;
+        m_recordLocalId = 0;
+        m_failed = true;
+        scheduleRecordRetry();
         emit syncChanged();
         return;
     }
