@@ -52,9 +52,9 @@ void clear()
 } // namespace NetworkLog
 
 namespace {
-QString method(const QString &path, bool isPost)
+QString method(const QString &path, const QByteArray &verb)
 {
-    return (isPost ? QStringLiteral("POST ") : QStringLiteral("GET ")) + path;
+    return QString::fromLatin1(verb) + QLatin1Char(' ') + path;
 }
 } // namespace
 
@@ -65,26 +65,37 @@ OfflineHttpClient::OfflineHttpClient(QObject *parent)
 {
 }
 
-quint64 OfflineHttpClient::postJson(const QString &path, const QJsonObject &body)
+quint64 OfflineHttpClient::failLater(const QByteArray &verb, const QString &path)
 {
-    Q_UNUSED(body)
     const quint64 id = m_nextId++;
-    NetworkLog::append(QStringLiteral("× %1 未发出（离线占位客户端）").arg(method(path, true)));
+    NetworkLog::append(QStringLiteral("× %1 未发出（离线占位客户端）").arg(method(path, verb)));
     QTimer::singleShot(0, this, [this, id] {
         emit failed(id, QStringLiteral("offline"));
     });
     return id;
 }
 
+quint64 OfflineHttpClient::postJson(const QString &path, const QJsonObject &body)
+{
+    Q_UNUSED(body)
+    return failLater("POST", path);
+}
+
 quint64 OfflineHttpClient::getJson(const QString &path, const QUrlQuery &query)
 {
     Q_UNUSED(query)
-    const quint64 id = m_nextId++;
-    NetworkLog::append(QStringLiteral("× %1 未发出（离线占位客户端）").arg(method(path, false)));
-    QTimer::singleShot(0, this, [this, id] {
-        emit failed(id, QStringLiteral("offline"));
-    });
-    return id;
+    return failLater("GET", path);
+}
+
+quint64 OfflineHttpClient::patchJson(const QString &path, const QJsonObject &body)
+{
+    Q_UNUSED(body)
+    return failLater("PATCH", path);
+}
+
+quint64 OfflineHttpClient::deleteJson(const QString &path)
+{
+    return failLater("DELETE", path);
 }
 
 // ---------------------------------------------------------------- 真实实现
@@ -96,6 +107,10 @@ NetworkHttpClient::NetworkHttpClient(QObject *parent)
     // 没有可用的 NetworkInformation 后端时（极少数桌面环境），
     // instance() 返回空，isOnline() 就退回"乐观在线"，让请求自己失败。
     QNetworkInformation::loadDefaultBackend();
+    if (auto *info = QNetworkInformation::instance()) {
+        connect(info, &QNetworkInformation::reachabilityChanged,
+                this, &HttpClient::onlineChanged);
+    }
 }
 
 NetworkHttpClient::~NetworkHttpClient()
@@ -156,7 +171,7 @@ quint64 NetworkHttpClient::postJson(const QString &path, const QJsonObject &body
     job.id = m_nextId++;
     job.path = path;
     job.body = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    job.isPost = true;
+    job.verb = "POST";
     return enqueue(job);
 }
 
@@ -166,7 +181,26 @@ quint64 NetworkHttpClient::getJson(const QString &path, const QUrlQuery &query)
     job.id = m_nextId++;
     job.path = path;
     job.query = query;
-    job.isPost = false;
+    job.verb = "GET";
+    return enqueue(job);
+}
+
+quint64 NetworkHttpClient::patchJson(const QString &path, const QJsonObject &body)
+{
+    Job job;
+    job.id = m_nextId++;
+    job.path = path;
+    job.body = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    job.verb = "PATCH";
+    return enqueue(job);
+}
+
+quint64 NetworkHttpClient::deleteJson(const QString &path)
+{
+    Job job;
+    job.id = m_nextId++;
+    job.path = path;
+    job.verb = "DELETE";
     return enqueue(job);
 }
 
@@ -175,7 +209,7 @@ quint64 NetworkHttpClient::enqueue(const Job &job)
     if (!isOnline()) {
         // 没网就别发：立刻回 offline，上层显示"已记录，待同步"
         const quint64 id = job.id;
-        NetworkLog::append(QStringLiteral("× %1 未发出（设备离线）").arg(method(job.path, job.isPost)));
+        NetworkLog::append(QStringLiteral("× %1 未发出（设备离线）").arg(method(job.path, job.verb)));
         QTimer::singleShot(0, this, [this, id] {
             emit failed(id, QStringLiteral("offline"));
         });
@@ -194,10 +228,10 @@ void NetworkHttpClient::dispatch(const Job &job)
 
     m_startedAt.insert(job.id, QDateTime::currentMSecsSinceEpoch());
     if (job.attempt == 0) {
-        NetworkLog::append(QStringLiteral("→ %1").arg(method(job.path, job.isPost)));
+        NetworkLog::append(QStringLiteral("→ %1").arg(method(job.path, job.verb)));
     } else {
         NetworkLog::append(QStringLiteral("→ %1（第 %2 次）")
-                               .arg(method(job.path, job.isPost))
+                               .arg(method(job.path, job.verb))
                                .arg(job.attempt + 1));
     }
 
@@ -215,7 +249,15 @@ void NetworkHttpClient::dispatch(const Job &job)
     if (!bearer.isEmpty())
         request.setRawHeader("Authorization", "Bearer " + bearer.toUtf8());
 
-    QNetworkReply *reply = job.isPost ? m_net->post(request, job.body) : m_net->get(request);
+    QNetworkReply *reply = nullptr;
+    if (job.verb == "GET")
+        reply = m_net->get(request);
+    else if (job.verb == "POST")
+        reply = m_net->post(request, job.body);
+    else if (job.verb == "DELETE")
+        reply = m_net->deleteResource(request);
+    else
+        reply = m_net->sendCustomRequest(request, job.verb, job.body);
     m_replyIds.insert(reply, job.id);
     connect(reply, &QNetworkReply::finished, this, [this, reply] { onFinished(reply); });
 }
@@ -268,7 +310,7 @@ void NetworkHttpClient::onFinished(QNetworkReply *netReply)
         m_jobs.insert(id, job);
         const int delay = kBaseBackoffMs << (job.attempt - 1);
         NetworkLog::append(QStringLiteral("↻ %1 %2ms 无响应，%3ms 后重试（第 %4 次）")
-                               .arg(method(job.path, job.isPost))
+                               .arg(method(job.path, job.verb))
                                .arg(elapsed)
                                .arg(delay)
                                .arg(job.attempt + 1));
@@ -286,7 +328,7 @@ void NetworkHttpClient::onFinished(QNetworkReply *netReply)
     NetworkLog::append(QStringLiteral("✗ %1 %2 %3ms")
                            .arg(looksOffline ? QStringLiteral("offline")
                                              : QStringLiteral("network"))
-                           .arg(method(job.path, job.isPost))
+                           .arg(method(job.path, job.verb))
                            .arg(elapsed));
     emit failed(id, looksOffline ? QStringLiteral("offline") : QStringLiteral("network"));
 }

@@ -50,6 +50,10 @@ public:
     // 返回 requestId（>0），完成时发 reply 或 failed。
     virtual quint64 postJson(const QString &path, const QJsonObject &body) = 0;
     virtual quint64 getJson(const QString &path, const QUrlQuery &query) = 0;
+    // 记录修订（PATCH /v1/records/{id}）用；重试/回执语义与 postJson 相同。
+    virtual quint64 patchJson(const QString &path, const QJsonObject &body) = 0;
+    // 计划删除（DELETE /v1/plans/{id}）用；无请求体。
+    virtual quint64 deleteJson(const QString &path) = 0;
 
 signals:
     // 合约：reply/failed 不得在 postJson/getJson 的调用栈内**同步**发出
@@ -57,6 +61,8 @@ signals:
     // 异步（QNetworkReply），要么用队列投递延迟一拍。
     void reply(quint64 requestId, int status, const QJsonObject &body);
     void failed(quint64 requestId, const QString &code);
+    // isOnline() 可能变了（系统网络断开/恢复）。上层据此在重连后立刻补传队列。
+    void onlineChanged();
 };
 
 // demo 用占位实现：所有请求立刻失败，保证离线也能跑。
@@ -70,8 +76,11 @@ public:
     bool isOnline() const override { return false; }
     quint64 postJson(const QString &path, const QJsonObject &body) override;
     quint64 getJson(const QString &path, const QUrlQuery &query) override;
+    quint64 patchJson(const QString &path, const QJsonObject &body) override;
+    quint64 deleteJson(const QString &path) override;
 
 private:
+    quint64 failLater(const QByteArray &verb, const QString &path);
     quint64 m_nextId = 1;
 };
 
@@ -95,6 +104,8 @@ public:
     bool isOnline() const override;
     quint64 postJson(const QString &path, const QJsonObject &body) override;
     quint64 getJson(const QString &path, const QUrlQuery &query) override;
+    quint64 patchJson(const QString &path, const QJsonObject &body) override;
+    quint64 deleteJson(const QString &path) override;
 
     // 配对成功后由 DeviceVM 写入；同时落盘，重启后仍然带着
     void setToken(const QString &token);
@@ -106,7 +117,7 @@ private:
         QString path;
         QUrlQuery query;
         QByteArray body;
-        bool isPost = true;
+        QByteArray verb = "POST"; // GET / POST / PATCH / DELETE
         int attempt = 0;
     };
 

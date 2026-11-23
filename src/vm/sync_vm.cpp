@@ -69,6 +69,41 @@ QJsonObject eventToServer(const QVariantMap &event)
     };
 }
 
+// 记录：时间字段叫 at（毫秒），和契约 v0.1 及云端 v1_adapter._record_write 一致——
+// 云端只认 at，发成 ts 会被当成缺省、落成上传时刻。
+// client_id 供服务端在 POST 重试时去重（本地联调服务端支持，云端暂不认）。
+QJsonObject recordToServer(const QVariantMap &rec, bool forPatch)
+{
+    QJsonObject body {
+        { QLatin1String("value"), rec.value(QStringLiteral("value")).toDouble() },
+        { QLatin1String("unit"), rec.value(QStringLiteral("unit")).toString() },
+        { QLatin1String("at"), rec.value(QStringLiteral("at")).toLongLong() },
+    };
+    if (!forPatch) {
+        body.insert(QLatin1String("type"), rec.value(QStringLiteral("type")).toString());
+        body.insert(QLatin1String("client_id"), rec.value(QStringLiteral("clientId")).toString());
+        body.insert(QLatin1String("device_id"), AppSettings::instance()->deviceId());
+    }
+    return body;
+}
+
+// 计划：端上 camelCase → 规范 §8 snake_case。planId 不发：新建由服务端分配，
+// 改/删走路径里的 id。
+QJsonObject planToServer(const QVariantMap &plan)
+{
+    return {
+        { QLatin1String("title"), plan.value(QStringLiteral("title")).toString() },
+        { QLatin1String("dose"), plan.value(QStringLiteral("dose")).toString() },
+        { QLatin1String("note"), plan.value(QStringLiteral("note")).toString() },
+        { QLatin1String("rule"),
+          QJsonObject::fromVariantMap(plan.value(QStringLiteral("rule")).toMap()) },
+        { QLatin1String("window_min"), plan.value(QStringLiteral("windowMin")).toInt() },
+        { QLatin1String("escalate_after_min"),
+          plan.value(QStringLiteral("escalateAfterMin")).toInt() },
+        { QLatin1String("allow_late"), plan.value(QStringLiteral("allowLate"), true).toBool() },
+    };
+}
+
 QVariantList ackedFromServer(const QJsonArray &accepted)
 {
     QVariantList out;
@@ -92,27 +127,34 @@ SyncVM::SyncVM(QObject *parent)
     m_http = m_network = new NetworkHttpClient(this);
 
     m_stateTimer.setInterval(15 * 1000);
-    connect(&m_stateTimer, &QTimer::timeout, this, &SyncVM::pullState);
+    connect(&m_stateTimer, &QTimer::timeout, this, &SyncVM::heartbeat);
     m_planTimer.setInterval(60 * 1000);
-    connect(&m_planTimer, &QTimer::timeout, this, &SyncVM::pullPlans);
+    connect(&m_planTimer, &QTimer::timeout, this, &SyncVM::onPlanTimer);
     m_uploadBackoff.setSingleShot(true);
     connect(&m_uploadBackoff, &QTimer::timeout, this, &SyncVM::uploadPending);
+    m_recordBackoff.setSingleShot(true);
+    connect(&m_recordBackoff, &QTimer::timeout, this, &SyncVM::uploadRecords);
+    m_planBackoff.setSingleShot(true);
+    connect(&m_planBackoff, &QTimer::timeout, this, &SyncVM::uploadPlans);
 
     AppCore *core = AppCore::instance();
     // 队列投递：ack 回调里 markEventsSynced 会再发 eventsChanged，
     // 直连会在同一栈帧里递归发起下一轮上传。
     connect(core, &AppCore::eventsChanged, this, &SyncVM::uploadPending,
             Qt::QueuedConnection);
+    connect(core, &AppCore::recordsChanged, this, &SyncVM::uploadRecords,
+            Qt::QueuedConnection);
+    connect(core, &AppCore::plansChanged, this, &SyncVM::uploadPlans,
+            Qt::QueuedConnection);
+    connect(core, &AppCore::plansChanged, this, &SyncVM::syncChanged);
+    // pendingCount 挂在 syncChanged 上：事件入队/ack、记录增改都要刷新，
+    // 否则离线时按 SOS、记一杯水，管理页的"待上传"数字不动。
+    connect(core, &AppCore::eventsChanged, this, &SyncVM::syncChanged);
+    connect(core, &AppCore::recordsChanged, this, &SyncVM::syncChanged);
     connect(core, &AppCore::occurrencesChanged, this, &SyncVM::syncChanged);
     connect(core, &AppCore::toast, this, &SyncVM::toast);
 
-    // 回执必须异步处理（Qt::QueuedConnection 强制）：HttpClient 合约规定
-    // reply/failed 不得在 postJson/getJson 调用栈内同步发出——同步发出时
-    // requestId 还没赋给 m_*Req，回执会被整个丢掉。
-    if (HttpClient *client = qobject_cast<HttpClient *>(m_network)) {
-        connect(client, &HttpClient::reply, this, &SyncVM::onReply, Qt::QueuedConnection);
-        connect(client, &HttpClient::failed, this, &SyncVM::onFailed, Qt::QueuedConnection);
-    }
+    connectClient(m_network);
     m_stateTimer.start();
     m_planTimer.start();
 }
@@ -127,15 +169,55 @@ void SyncVM::setHttpClient(HttpClient *client)
     if (!qobject_cast<NetworkHttpClient *>(client))
         m_network = nullptr; // 假实现：token 读取交给假实现自己
     client->setParent(this);
+    connectClient(client);
+}
+
+void SyncVM::connectClient(HttpClient *client)
+{
+    // 回执必须异步处理（Qt::QueuedConnection 强制）：HttpClient 合约规定
+    // reply/failed 不得在 postJson/getJson 调用栈内同步发出——同步发出时
+    // requestId 还没赋给 m_*Req，回执会被整个丢掉。
     connect(client, &HttpClient::reply, this, &SyncVM::onReply, Qt::QueuedConnection);
     connect(client, &HttpClient::failed, this, &SyncVM::onFailed, Qt::QueuedConnection);
+    // 队列投递：系统网络回调里不直接发请求
+    connect(client, &HttpClient::onlineChanged, this, &SyncVM::onOnlineChanged,
+            Qt::QueuedConnection);
+}
+
+void SyncVM::onOnlineChanged()
+{
+    // 只认当前在用的客户端（测试换成假实现后，真实客户端的通知不算数）
+    if (sender() && sender() != m_http)
+        return;
+    emit syncChanged(); // syncState 可能在 offline 与其他状态之间切换
+    if (!canSync())
+        return;
+    // 刚恢复联网：断网期间攒下的退避没有意义，清掉立刻补传
+    m_uploadBackoff.stop();
+    m_recordBackoff.stop();
+    m_planBackoff.stop();
+    m_backoffMs = 0;
+    m_recordBackoffMs = 0;
+    m_planBackoffMs = 0;
+    cycle();
+}
+
+void SyncVM::heartbeat()
+{
+    if (!m_planBackoff.isActive())
+        uploadPlans();
+    if (!m_uploadBackoff.isActive())
+        uploadPending();
+    if (!m_recordBackoff.isActive())
+        uploadRecords();
+    pullState();
 }
 
 QString SyncVM::computeState() const
 {
     if (!canSync())
         return QStringLiteral("offline");
-    if (m_uploadReq || m_alarmReq || m_stateReq || m_plansReq)
+    if (m_uploadReq || m_alarmReq || m_recordReq || m_planReq || m_stateReq || m_plansReq)
         return QStringLiteral("syncing");
     if (m_failed)
         return QStringLiteral("error");
@@ -154,7 +236,9 @@ qint64 SyncVM::lastSyncTs() const
 
 int SyncVM::pendingCount() const
 {
-    return AppCore::instance()->pendingEvents().size();
+    return AppCore::instance()->pendingEvents().size()
+        + AppCore::instance()->pendingRecordCount()
+        + AppCore::instance()->pendingPlanCount();
 }
 
 bool SyncVM::canSync() const
@@ -189,16 +273,19 @@ void SyncVM::retrySync()
 
 void SyncVM::cycle()
 {
+    uploadPlans(); // 计划先走：新计划换号后，挂在它上面的事件才能传
     uploadPending();
+    uploadRecords();
     pullState();
-    pullPlans();
+    pullPlans(true); // 手动同步/重连：拉全量对账，云端删掉的计划这里能发现
 }
 
 void SyncVM::uploadPending()
 {
     if (m_uploadReq || m_alarmReq || !canSync())
         return;
-    const QVariantList pending = AppCore::instance()->pendingEvents();
+    // 挂在还没上传的计划上的事件先留着（服务端没有那个 occurrence）
+    const QVariantList pending = AppCore::instance()->uploadableEvents();
     if (pending.isEmpty())
         return;
 
@@ -235,6 +322,48 @@ void SyncVM::uploadPending()
     emit syncChanged();
 }
 
+void SyncVM::uploadRecords()
+{
+    if (m_recordReq || !canSync())
+        return;
+    const QVariantList pending = AppCore::instance()->pendingRecords();
+    if (pending.isEmpty())
+        return;
+
+    const QVariantMap rec = pending.first().toMap();
+    const qint64 serverId = rec.value(QStringLiteral("serverRecordId")).toLongLong();
+    m_recordLocalId = rec.value(QStringLiteral("recordId")).toLongLong();
+    m_recordRev = rec.value(QStringLiteral("syncRev")).toLongLong();
+    m_recordIsPatch = serverId > 0;
+    m_recordReq = m_recordIsPatch
+        ? m_http->patchJson(QStringLiteral("/records/%1").arg(serverId),
+                            recordToServer(rec, true))
+        : m_http->postJson(QStringLiteral("/records"), recordToServer(rec, false));
+    emit syncChanged();
+}
+
+void SyncVM::uploadPlans()
+{
+    if (m_planReq || !canSync())
+        return;
+    const QVariantList pending = AppCore::instance()->pendingPlans();
+    if (pending.isEmpty())
+        return;
+
+    const QVariantMap plan = pending.first().toMap();
+    m_planId = plan.value(QStringLiteral("planId")).toLongLong();
+    m_planRev = plan.value(QStringLiteral("syncRev")).toLongLong();
+    m_planOp = plan.value(QStringLiteral("op")).toString();
+    const QString path = QStringLiteral("/plans/%1").arg(m_planId);
+    if (m_planOp == QLatin1String("create"))
+        m_planReq = m_http->postJson(QStringLiteral("/plans"), planToServer(plan));
+    else if (m_planOp == QLatin1String("delete"))
+        m_planReq = m_http->deleteJson(path);
+    else
+        m_planReq = m_http->patchJson(path, planToServer(plan));
+    emit syncChanged();
+}
+
 void SyncVM::pullState()
 {
     if (m_stateReq || !canSync())
@@ -246,15 +375,145 @@ void SyncVM::pullState()
     emit syncChanged();
 }
 
-void SyncVM::pullPlans()
+void SyncVM::onPlanTimer()
 {
-    if (m_plansReq || !canSync())
+    // 增量拉取收不到云端硬删除：每 5 分钟（含启动后第一次）拉一次全量对账
+    pullPlans(m_planTicks++ % 5 == 0);
+}
+
+void SyncVM::pullPlans(bool full)
+{
+    if (!canSync())
         return;
+    if (m_plansReq) {
+        if (full && !m_plansReqFull)
+            m_fullPlansPending = true;
+        return;
+    }
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("since"),
-                       QString::number(AppSettings::instance()->plansSeq()));
+                       full ? QStringLiteral("0")
+                            : QString::number(AppSettings::instance()->plansSeq()));
+    m_plansReqFull = full;
     m_plansReq = m_http->getJson(QStringLiteral("/plans"), query);
     emit syncChanged();
+}
+
+void SyncVM::scheduleRecordRetry()
+{
+    m_recordBackoffMs =
+        m_recordBackoffMs <= 0 ? 1000 : qMin(kMaxBackoffMs, m_recordBackoffMs * 2);
+    m_recordBackoff.start(m_recordBackoffMs);
+}
+
+void SyncVM::onUnauthorized()
+{
+    m_failed = true;
+    AppSettings::instance()->clearToken();
+    AppSettings::instance()->setPairing(false, QString());
+    emit commandRejected(QStringLiteral("offline"),
+                         QStringLiteral("登录已失效，请重新配对"));
+}
+
+void SyncVM::schedulePlanRetry()
+{
+    m_planBackoffMs = m_planBackoffMs <= 0 ? 1000 : qMin(kMaxBackoffMs, m_planBackoffMs * 2);
+    m_planBackoff.start(m_planBackoffMs);
+}
+
+void SyncVM::onPlanReply(int status, const QJsonObject &body)
+{
+    const qint64 planId = m_planId;
+    const QString op = m_planOp;
+    m_planReq = 0;
+    m_planId = 0;
+    AppCore *core = AppCore::instance();
+    const qint64 serverVersion =
+        static_cast<qint64>(body.value(QLatin1String("version")).toDouble());
+
+    auto backoff = [this] {
+        m_failed = true;
+        schedulePlanRetry();
+        emit syncChanged();
+    };
+
+    if (status >= 200 && status < 300) {
+        if (op == QLatin1String("create")) {
+            const qint64 serverId =
+                static_cast<qint64>(body.value(QLatin1String("plan_id")).toDouble());
+            if (serverId <= 0)
+                return backoff(); // 没有 plan_id 就没法换号，当失败重传
+            core->markPlanCreated(planId, serverId, m_planRev, serverVersion);
+        } else {
+            core->markPlanSynced(planId, m_planRev, serverVersion);
+        }
+        m_planBackoffMs = 0;
+        noteSuccess();
+    } else if (status == 401) {
+        onUnauthorized();
+        emit syncChanged();
+        return;
+    } else if (status == 404 && op == QLatin1String("delete")) {
+        core->markPlanSynced(planId, m_planRev, 0); // 服务端本来就没有：删除目的已达成
+    } else if (status == 404 && op == QLatin1String("update")) {
+        core->forgetServerPlan(planId); // 服务端没有这条：重新 POST（届时换号）
+    } else if (op == QLatin1String("create") && (status == 404 || status == 405)) {
+        return backoff(); // 服务端缺接口：留在队列里，别标拒收
+    } else if (status >= 400 && status < 500 && status != 408 && status != 429) {
+        core->rejectPlan(planId);
+    } else {
+        return backoff();
+    }
+    emit syncChanged();
+    uploadPlans(); // 本地状态已同步更新，直接接着传下一条
+}
+
+void SyncVM::onRecordReply(int status, const QJsonObject &body)
+{
+    const qint64 localId = m_recordLocalId;
+    const bool wasPatch = m_recordIsPatch;
+    m_recordReq = 0;
+    m_recordLocalId = 0;
+
+    if (status >= 200 && status < 300) {
+        const qint64 serverId =
+            static_cast<qint64>(body.value(QLatin1String("record_id")).toDouble());
+        if (!wasPatch && serverId <= 0) {
+            // 新建回执没给 record_id：以后没法 PATCH，当失败退避重传
+            // （POST 带 client_id，服务端去重，不会记两条）
+            m_failed = true;
+            scheduleRecordRetry();
+            emit syncChanged();
+            return;
+        }
+        AppCore::instance()->markRecordSynced(localId, wasPatch ? 0 : serverId, m_recordRev);
+        m_recordBackoffMs = 0;
+        noteSuccess();
+    } else if (status == 401) {
+        onUnauthorized();
+        emit syncChanged();
+        return;
+    } else if (wasPatch && status == 404) {
+        // 服务端没有这条（换了服务器/库被清）：改回重新 POST
+        AppCore::instance()->forgetServerRecord(localId);
+    } else if (!wasPatch && (status == 404 || status == 405)) {
+        // POST 404/405 只能是服务端还没这个接口：不能当拒收（会把积压记录
+        // 全标 -1 永久丢掉），留在队列里退避，等服务端补上
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    } else if (status >= 400 && status < 500 && status != 408 && status != 429) {
+        // 其余 4xx 是服务端明确拒收，重传不会变结果
+        AppCore::instance()->rejectRecord(localId);
+    } else {
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
+    emit syncChanged();
+    uploadRecords(); // 本地状态已同步更新，直接接着传下一条
 }
 
 void SyncVM::scheduleUploadRetry()
@@ -277,6 +536,15 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
         return;
     const bool ok = status >= 200 && status < 300;
 
+    if (requestId == m_recordReq) {
+        onRecordReply(status, body);
+        return;
+    }
+    if (requestId == m_planReq) {
+        onPlanReply(status, body);
+        return;
+    }
+
     if (requestId == m_alarmReq) {
         m_alarmReq = 0;
         const QString eventId = m_alarmEventId;
@@ -294,11 +562,7 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
             });
             noteSuccess();
         } else if (status == 401) {
-            m_failed = true;
-            AppSettings::instance()->clearToken();
-            AppSettings::instance()->setPairing(false, QString());
-            emit commandRejected(QStringLiteral("offline"),
-                                 QStringLiteral("登录已失效，请重新配对"));
+            onUnauthorized();
         } else {
             m_failed = true;
             scheduleUploadRetry();
@@ -348,11 +612,7 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
             m_backoffMs = 0;
         } else if (status == 401) {
             // token 失效：不再无限重试，等用户重新配对
-            m_failed = true;
-            AppSettings::instance()->clearToken();
-            AppSettings::instance()->setPairing(false, QString());
-            emit commandRejected(QStringLiteral("offline"),
-                                 QStringLiteral("登录已失效，请重新配对"));
+            onUnauthorized();
         } else {
             m_failed = true;
             scheduleUploadRetry();
@@ -381,11 +641,19 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
 
     if (requestId == m_plansReq) {
         m_plansReq = 0;
+        const bool full = m_plansReqFull;
+        m_plansReqFull = false;
         if (ok) {
             QVariantList plans;
-            for (const auto &item : body.value(QLatin1String("plans")).toArray())
-                plans.append(planFromServer(item.toObject()));
+            QList<qint64> ids;
+            for (const auto &item : body.value(QLatin1String("plans")).toArray()) {
+                const QVariantMap plan = planFromServer(item.toObject());
+                ids.append(plan.value(QStringLiteral("planId")).toLongLong());
+                plans.append(plan);
+            }
             AppCore::instance()->applyServerPlans(plans);
+            if (full && body.value(QLatin1String("plans")).isArray())
+                AppCore::instance()->reconcileServerPlans(ids);
             AppSettings::instance()->setPlansSeq(
                 static_cast<qint64>(body.value(QLatin1String("next_seq")).toDouble()));
             noteSuccess();
@@ -393,6 +661,10 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
             m_failed = true;
         }
         emit syncChanged();
+        if (m_fullPlansPending) {
+            m_fullPlansPending = false;
+            pullPlans(true);
+        }
         return;
     }
 }
@@ -408,6 +680,22 @@ void SyncVM::onFailed(quint64 requestId, const QString &code)
         emit syncChanged();
         return;
     }
+    if (requestId != 0 && requestId == m_planReq) {
+        m_planReq = 0;
+        m_planId = 0;
+        m_failed = true;
+        schedulePlanRetry();
+        emit syncChanged();
+        return;
+    }
+    if (requestId != 0 && requestId == m_recordReq) {
+        m_recordReq = 0;
+        m_recordLocalId = 0;
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
     if (requestId != 0 && requestId == m_uploadReq) {
         m_uploadReq = 0;
         m_failed = true;
@@ -418,8 +706,10 @@ void SyncVM::onFailed(quint64 requestId, const QString &code)
     if (requestId != 0 && (requestId == m_stateReq || requestId == m_plansReq)) {
         if (requestId == m_stateReq)
             m_stateReq = 0;
-        if (requestId == m_plansReq)
+        if (requestId == m_plansReq) {
             m_plansReq = 0;
+            m_plansReqFull = false;
+        }
         m_failed = true;
         emit syncChanged();
     }

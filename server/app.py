@@ -148,6 +148,7 @@ class Store:
                     type TEXT, value REAL, unit TEXT,
                     ts INTEGER NOT NULL,
                     updated_seq INTEGER DEFAULT 0,
+                    client_id TEXT DEFAULT '',
                     PRIMARY KEY(household_id, record_id)
                 );
                 CREATE TABLE IF NOT EXISTS alarms(
@@ -161,6 +162,10 @@ class Store:
                 );
                 """
             )
+            # 旧库补列：records.client_id（端上 POST 重试去重用）
+            cols = {r["name"] for r in self.db.execute("PRAGMA table_info(records)")}
+            if "client_id" not in cols:
+                self.db.execute("ALTER TABLE records ADD COLUMN client_id TEXT DEFAULT ''")
 
     # ---- 序号 ----
 
@@ -224,6 +229,22 @@ class Store:
                  json.dumps(plan.get("skip_dates", []), ensure_ascii=False),
                  version, 1 if plan.get("deleted", False) else 0, seq))
             return seq
+
+    def plan_row(self, household_id: int, plan_id: int):
+        """读一条计划（snake_case，规则/跳过日期已解析）；不存在返回 None。"""
+        row = self.db.execute(
+            "SELECT * FROM plans WHERE household_id=? AND plan_id=?",
+            (household_id, plan_id)).fetchone()
+        if row is None:
+            return None
+        return {
+            "plan_id": row["plan_id"], "title": row["title"], "dose": row["dose"],
+            "note": row["note"], "rule": json.loads(row["rule_json"] or "{}"),
+            "window_min": row["window_min"], "escalate_after_min": row["escalate_after_min"],
+            "allow_late": bool(row["allow_late"]),
+            "skip_dates": json.loads(row["skip_dates"] or "[]"),
+            "version": row["version"], "deleted": bool(row["deleted"]),
+        }
 
     def next_plan_id(self, household_id: int) -> int:
         with self.lock, self.db:
@@ -427,7 +448,16 @@ class Store:
     # ---- 记录 / 告警 ----
 
     def add_record(self, household_id: int, rec: dict):
+        client_id = str(rec.get("client_id") or "")
         with self.lock, self.db:
+            if client_id:
+                # 端上 POST 超时重试：同一 client_id 只记一条，回原来的 id
+                dup = self.db.execute(
+                    "SELECT record_id, updated_seq FROM records"
+                    " WHERE household_id=? AND client_id=?",
+                    (household_id, client_id)).fetchone()
+                if dup:
+                    return dup["record_id"], dup["updated_seq"]
             rid = self.db.execute("SELECT next_record_id FROM households WHERE id=?",
                                   (household_id,)).fetchone()["next_record_id"]
             self.db.execute("UPDATE households SET next_record_id=? WHERE id=?",
@@ -435,9 +465,10 @@ class Store:
             seq = self.bump_seq(household_id)
             self.db.execute(
                 "INSERT INTO records(household_id, record_id, type, value, unit, ts,"
-                " updated_seq) VALUES (?,?,?,?,?,?,?)",
+                " updated_seq, client_id) VALUES (?,?,?,?,?,?,?,?)",
                 (household_id, rid, rec.get("type", ""), rec.get("value", 0),
-                 rec.get("unit", ""), rec.get("ts") or now_ms(), seq))
+                 rec.get("unit", ""), rec.get("at") or rec.get("ts") or now_ms(), seq,
+                 client_id))
         return rid, seq
 
     def patch_record(self, household_id: int, record_id: int, patch: dict):
@@ -449,10 +480,12 @@ class Store:
                 return None
             seq = self.bump_seq(household_id)
             self.db.execute(
-                "UPDATE records SET type=?, value=?, unit=?, updated_seq=?"
+                "UPDATE records SET type=?, value=?, unit=?, ts=?, updated_seq=?"
                 " WHERE household_id=? AND record_id=?",
                 (patch.get("type", cur["type"]), patch.get("value", cur["value"]),
-                 patch.get("unit", cur["unit"]), seq, household_id, record_id))
+                 patch.get("unit", cur["unit"]),
+                 patch.get("at") or patch.get("ts") or cur["ts"], seq,
+                 household_id, record_id))
         return seq
 
     def add_alarm(self, household_id: int, body: dict):
@@ -609,16 +642,25 @@ class Handler(BaseHTTPRequestHandler):
         plan = dict(body)
         plan["plan_id"] = body.get("plan_id") or self.store.next_plan_id(hh["id"])
         seq = self.store.upsert_plan(hh["id"], plan)
-        self._send(200, {"plan_id": plan["plan_id"], "server_seq": seq})
+        version = self.store.plan_row(hh["id"], plan["plan_id"])["version"]
+        self._send(200, {"plan_id": plan["plan_id"], "version": version, "server_seq": seq})
 
     def _modify_plan(self, hh: dict, plan_id: int, method: str, body: dict):
+        # 在原计划上合并：DELETE 只改删除标记，PATCH 只改带来的字段
+        # （以前整条覆盖，DELETE 会把标题/规则清空）
+        cur = self.store.plan_row(hh["id"], plan_id)
+        if cur is None:
+            return self._send(404, {"error": "plan_not_found"})
+        merged = dict(cur)
         if method == "DELETE":
-            body = {"plan_id": plan_id, "deleted": True}
+            merged["deleted"] = True
         else:
-            body = dict(body)
-            body["plan_id"] = plan_id
-        seq = self.store.upsert_plan(hh["id"], body)
-        self._send(200, {"plan_id": plan_id, "server_seq": seq})
+            merged.update({k: v for k, v in body.items() if k != "plan_id"})
+            merged["deleted"] = bool(body.get("deleted", False))  # PATCH 即恢复启用
+        merged["plan_id"] = plan_id
+        seq = self.store.upsert_plan(hh["id"], merged)
+        version = self.store.plan_row(hh["id"], plan_id)["version"]
+        self._send(200, {"plan_id": plan_id, "version": version, "server_seq": seq})
 
     def _create_record(self, hh: dict, body: dict):
         rid, seq = self.store.add_record(hh["id"], body)
