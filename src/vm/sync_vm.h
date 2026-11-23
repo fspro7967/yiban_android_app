@@ -13,6 +13,8 @@ class NetworkHttpClient;
 // 线路（规范 §8/§9）：
 //   * 上传：AppCore.eventsChanged 触发 POST /v1/events，失败指数退避
 //     （1s/2s/4s/…上限 5 分钟），retrySync() 立即重试；
+//   * 计划：AppCore.plansChanged 触发 POST /v1/plans（本机新建，回执换成服务端号）、
+//     PATCH（改/恢复）、DELETE（删），一次一条，先于事件上传；
 //   * 记录：AppCore.recordsChanged 触发 POST /v1/records（新记录）或
 //     PATCH /v1/records/{id}（修正过的），一次一条，退避同上；
 //   * 拉取：GET /v1/state 每 15s、GET /v1/plans 每 60s，都带 since= 游标；
@@ -60,10 +62,15 @@ private:
     void connectClient(HttpClient *client);
     void uploadPending();
     void uploadRecords();
+    void uploadPlans();
     void pullState();
-    void pullPlans();
+    // full = true 时 since=0 拉全量并对账（发现云端硬删除）；否则按游标增量。
+    void pullPlans(bool full = false);
+    void onPlanTimer();
     void scheduleUploadRetry();
     void scheduleRecordRetry();
+    void schedulePlanRetry();
+    void onPlanReply(int status, const QJsonObject &body);
     void onUnauthorized();                // 401：清令牌、退出配对，等用户重新配对
     void onRecordReply(int status, const QJsonObject &body);
     bool canSync() const;                 // 已配对 + 有服务器地址
@@ -79,6 +86,7 @@ private:
     QTimer m_planTimer;                   // 60s 拉 /plans
     QTimer m_uploadBackoff;               // 上传失败退避
     QTimer m_recordBackoff;               // 记录上传失败退避
+    QTimer m_planBackoff;                 // 计划上传失败退避
 
     quint64 m_uploadReq = 0;              // 在途请求 id（0 = 无）
     quint64 m_alarmReq = 0;               // 呼救告警上传（occurrenceId=0 的 SOS 走 /alarm）
@@ -87,9 +95,17 @@ private:
     qint64 m_recordLocalId = 0;           // 在途请求对应的本地 recordId
     qint64 m_recordRev = 0;               // 在途请求带上去的 syncRev
     bool m_recordIsPatch = false;
+    quint64 m_planReq = 0;                // 在途计划请求（一次只传一条）
+    qint64 m_planId = 0;                  // 在途请求对应的本地 planId
+    qint64 m_planRev = 0;                 // 在途请求带上去的 syncRev
+    QString m_planOp;                     // create / update / delete
     quint64 m_stateReq = 0;
     quint64 m_plansReq = 0;
+    bool m_plansReqFull = false;          // 在途的 /plans 是不是全量
+    bool m_fullPlansPending = false;      // 全量请求撞上在途增量：回执后补拉
+    int m_planTicks = 0;                  // 60s 计时，每 5 次（含首次）拉一次全量
     int m_backoffMs = 0;                  // 下次退避时长；0 = 上传正常
     int m_recordBackoffMs = 0;
+    int m_planBackoffMs = 0;
     bool m_failed = false;                // 最近一轮是否出错（error 态）
 };

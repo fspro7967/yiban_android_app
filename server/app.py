@@ -230,6 +230,22 @@ class Store:
                  version, 1 if plan.get("deleted", False) else 0, seq))
             return seq
 
+    def plan_row(self, household_id: int, plan_id: int):
+        """读一条计划（snake_case，规则/跳过日期已解析）；不存在返回 None。"""
+        row = self.db.execute(
+            "SELECT * FROM plans WHERE household_id=? AND plan_id=?",
+            (household_id, plan_id)).fetchone()
+        if row is None:
+            return None
+        return {
+            "plan_id": row["plan_id"], "title": row["title"], "dose": row["dose"],
+            "note": row["note"], "rule": json.loads(row["rule_json"] or "{}"),
+            "window_min": row["window_min"], "escalate_after_min": row["escalate_after_min"],
+            "allow_late": bool(row["allow_late"]),
+            "skip_dates": json.loads(row["skip_dates"] or "[]"),
+            "version": row["version"], "deleted": bool(row["deleted"]),
+        }
+
     def next_plan_id(self, household_id: int) -> int:
         with self.lock, self.db:
             pid = self.db.execute(
@@ -626,16 +642,25 @@ class Handler(BaseHTTPRequestHandler):
         plan = dict(body)
         plan["plan_id"] = body.get("plan_id") or self.store.next_plan_id(hh["id"])
         seq = self.store.upsert_plan(hh["id"], plan)
-        self._send(200, {"plan_id": plan["plan_id"], "server_seq": seq})
+        version = self.store.plan_row(hh["id"], plan["plan_id"])["version"]
+        self._send(200, {"plan_id": plan["plan_id"], "version": version, "server_seq": seq})
 
     def _modify_plan(self, hh: dict, plan_id: int, method: str, body: dict):
+        # 在原计划上合并：DELETE 只改删除标记，PATCH 只改带来的字段
+        # （以前整条覆盖，DELETE 会把标题/规则清空）
+        cur = self.store.plan_row(hh["id"], plan_id)
+        if cur is None:
+            return self._send(404, {"error": "plan_not_found"})
+        merged = dict(cur)
         if method == "DELETE":
-            body = {"plan_id": plan_id, "deleted": True}
+            merged["deleted"] = True
         else:
-            body = dict(body)
-            body["plan_id"] = plan_id
-        seq = self.store.upsert_plan(hh["id"], body)
-        self._send(200, {"plan_id": plan_id, "server_seq": seq})
+            merged.update({k: v for k, v in body.items() if k != "plan_id"})
+            merged["deleted"] = bool(body.get("deleted", False))  # PATCH 即恢复启用
+        merged["plan_id"] = plan_id
+        seq = self.store.upsert_plan(hh["id"], merged)
+        version = self.store.plan_row(hh["id"], plan_id)["version"]
+        self._send(200, {"plan_id": plan_id, "version": version, "server_seq": seq})
 
     def _create_record(self, hh: dict, body: dict):
         rid, seq = self.store.add_record(hh["id"], body)

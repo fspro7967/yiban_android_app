@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QTime>
 #include <QHash>
+#include <QSet>
 #include <QUuid>
 #include <QtMath>
 
@@ -23,6 +24,9 @@
 namespace {
 
 constexpr qint64 kOccurrenceIdBase = 1000000000LL;
+// 本机新建、还没上传的计划用这个号段起的 planId：服务端 plan_id 是从 1 自增的，
+// 不会追到这里。occurrenceId = planId*1e9 + …，5e6*1e9 = 5e15 < 2^53（QML double 安全）。
+constexpr qint64 kLocalPlanIdBase = 5000000LL;
 constexpr qint64 kSnoozeMinutes = 10;
 constexpr int kMaxSnooze = 3;
 constexpr int kDefaultWindowMin = 30;
@@ -1284,6 +1288,12 @@ qint64 AppCore::createPlan(const QVariantMap &plan, QString *error)
     }
 
     QVariantMap stored = plan;
+    if (!m_demoMode) {
+        // 真实域：先用本地号段，等 POST /v1/plans 回执换成服务端号
+        if (m_nextPlanId < kLocalPlanIdBase)
+            m_nextPlanId = kLocalPlanIdBase;
+        stored[QStringLiteral("localOnly")] = true;
+    }
     stored[QStringLiteral("planId")] = m_nextPlanId++;
     stored[QStringLiteral("windowMin")] =
         plan.value(QStringLiteral("windowMin"), kDefaultWindowMin).toInt();
@@ -1347,12 +1357,16 @@ bool AppCore::updatePlan(qint64 planId, const QVariantMap &plan, QString *error)
     for (auto it = plan.constBegin(); it != plan.constEnd(); ++it) {
         // 身份与删除标记只能由各自的命令改，补丁里的同名键忽略。
         if (it.key() == QStringLiteral("planId") || it.key() == QStringLiteral("deleted")
-            || it.key() == QStringLiteral("version"))
+            || it.key() == QStringLiteral("version") || it.key() == QStringLiteral("localOnly")
+            || it.key() == QStringLiteral("syncRev") || it.key() == QStringLiteral("syncedRev")
+            || it.key() == QStringLiteral("syncedVersion")
+            || it.key() == QStringLiteral("syncRejected"))
             continue;
         stored.insert(it.key(), it.value());
     }
     stored[QStringLiteral("planId")] = planId;
     stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
+    stored[QStringLiteral("syncRev")] = stored.value(QStringLiteral("syncRev")).toLongLong() + 1;
     m_plans[index] = stored;
 
     // 记下这条计划今天每个 occurrence 原来的时间；改了时间的未完成项重新从"待提醒"开始，
@@ -1469,6 +1483,7 @@ bool AppCore::deletePlan(qint64 planId, QString *error)
     }
     stored[QStringLiteral("deleted")] = true;
     stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
+    stored[QStringLiteral("syncRev")] = stored.value(QStringLiteral("syncRev")).toLongLong() + 1;
     m_plans[index] = stored;
 
     // 先留住今天这条计划的 occurrence，撤销删除时连同已确认的进度一起恢复。
@@ -1497,6 +1512,7 @@ bool AppCore::restorePlan(qint64 planId, QString *error)
     QVariantMap stored = m_plans.at(index).toMap();
     stored[QStringLiteral("deleted")] = false;
     stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
+    stored[QStringLiteral("syncRev")] = stored.value(QStringLiteral("syncRev")).toLongLong() + 1;
     m_plans[index] = stored;
 
     m_day = clockToday();
@@ -1872,6 +1888,217 @@ void AppCore::forgetServerRecord(qint64 recordId)
     }
 }
 
+namespace {
+
+QString planSyncOp(const QVariantMap &plan)
+{
+    if (plan.value(QStringLiteral("syncRejected")).toBool())
+        return QString();
+    const bool deleted = plan.value(QStringLiteral("deleted")).toBool();
+    if (plan.value(QStringLiteral("localOnly")).toBool())
+        return deleted ? QString() : QStringLiteral("create"); // 没传过又删了：不用传
+    if (plan.value(QStringLiteral("syncRev")).toLongLong()
+        <= plan.value(QStringLiteral("syncedRev")).toLongLong())
+        return QString();
+    return deleted ? QStringLiteral("delete") : QStringLiteral("update");
+}
+
+qint64 remapOccurrenceId(qint64 occurrenceId, qint64 fromPlan, qint64 toPlan)
+{
+    if (occurrenceId <= 0 || occurrenceId / kOccurrenceIdBase != fromPlan)
+        return occurrenceId;
+    return toPlan * kOccurrenceIdBase + occurrenceId % kOccurrenceIdBase;
+}
+
+QVariantList remapOccurrences(const QVariantList &list, qint64 fromPlan, qint64 toPlan)
+{
+    QVariantList out;
+    out.reserve(list.size());
+    for (const QVariant &entry : list) {
+        QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("planId")).toLongLong() == fromPlan) {
+            occ[QStringLiteral("planId")] = toPlan;
+            occ[QStringLiteral("occurrenceId")] = remapOccurrenceId(
+                occ.value(QStringLiteral("occurrenceId")).toLongLong(), fromPlan, toPlan);
+        }
+        out.append(occ);
+    }
+    return out;
+}
+
+} // namespace
+
+QVariantList AppCore::pendingPlans() const
+{
+    QVariantList out;
+    if (m_demoMode)
+        return out;
+    for (const QVariant &entry : m_plans) {
+        QVariantMap plan = entry.toMap();
+        const QString op = planSyncOp(plan);
+        if (op.isEmpty())
+            continue;
+        plan[QStringLiteral("op")] = op;
+        out.append(plan);
+    }
+    return out;
+}
+
+int AppCore::pendingPlanCount() const
+{
+    return pendingPlans().size();
+}
+
+QVariantList AppCore::uploadableEvents() const
+{
+    QSet<qint64> notOnServer;
+    for (const QVariant &entry : m_plans) {
+        const QVariantMap plan = entry.toMap();
+        if (plan.value(QStringLiteral("localOnly")).toBool()
+            || plan.value(QStringLiteral("syncRejected")).toBool())
+            notOnServer.insert(plan.value(QStringLiteral("planId")).toLongLong());
+    }
+    const QVariantList pending = pendingEvents();
+    if (notOnServer.isEmpty())
+        return pending;
+    QVariantList out;
+    for (const QVariant &entry : pending) {
+        const qint64 occurrenceId = entry.toMap().value(QStringLiteral("occurrenceId")).toLongLong();
+        if (occurrenceId > 0 && notOnServer.contains(occurrenceId / kOccurrenceIdBase))
+            continue;
+        out.append(entry);
+    }
+    return out;
+}
+
+void AppCore::markPlanCreated(qint64 localPlanId, qint64 serverPlanId, qint64 rev,
+                              qint64 serverVersion)
+{
+    if (serverPlanId <= 0)
+        return;
+    int index = indexOfPlan(localPlanId);
+    if (index < 0)
+        return;
+
+    if (serverPlanId != localPlanId) {
+        // 拉取可能抢在回执前把这条新计划当"服务端新计划"拉了下来：去掉那份副本
+        const int dup = indexOfPlan(serverPlanId);
+        if (dup >= 0) {
+            m_plans.removeAt(dup);
+            QVariantList kept;
+            for (const QVariant &entry : std::as_const(m_occurrences)) {
+                if (entry.toMap().value(QStringLiteral("planId")).toLongLong() != serverPlanId)
+                    kept.append(entry);
+            }
+            m_occurrences = kept;
+            index = indexOfPlan(localPlanId);
+        }
+
+        m_occurrences = remapOccurrences(m_occurrences, localPlanId, serverPlanId);
+        for (int i = 0; i < m_events.size(); ++i) {
+            QVariantMap event = m_events.at(i).toMap();
+            const qint64 oldId = event.value(QStringLiteral("occurrenceId")).toLongLong();
+            const qint64 newId = remapOccurrenceId(oldId, localPlanId, serverPlanId);
+            if (newId == oldId)
+                continue;
+            event[QStringLiteral("occurrenceId")] = newId;
+            m_events[i] = event;
+        }
+        if (m_deletedOccurrences.contains(localPlanId))
+            m_deletedOccurrences.insert(serverPlanId,
+                                        remapOccurrences(m_deletedOccurrences.take(localPlanId),
+                                                         localPlanId, serverPlanId));
+        if (m_skippedOccurrences.contains(localPlanId))
+            m_skippedOccurrences.insert(serverPlanId,
+                                        remapOccurrences(m_skippedOccurrences.take(localPlanId),
+                                                         localPlanId, serverPlanId));
+    }
+
+    QVariantMap plan = m_plans.at(index).toMap();
+    plan[QStringLiteral("planId")] = serverPlanId;
+    plan.remove(QStringLiteral("localOnly"));
+    if (rev > plan.value(QStringLiteral("syncedRev")).toLongLong())
+        plan[QStringLiteral("syncedRev")] = rev;
+    plan[QStringLiteral("syncedVersion")] = serverVersion > 0 ? serverVersion : 1;
+    m_plans[index] = plan;
+
+    logOperation(QStringLiteral("计划"),
+                 QStringLiteral("计划已上传：%1（编号 %2）").arg(planLabel(plan)).arg(serverPlanId));
+    emit plansChanged();
+    emit occurrencesChanged();
+    emit currentChanged();
+    emit eventsChanged(); // 挂在这条计划上的事件现在可以传了
+}
+
+void AppCore::markPlanSynced(qint64 planId, qint64 rev, qint64 serverVersion)
+{
+    const int index = indexOfPlan(planId);
+    if (index < 0)
+        return;
+    QVariantMap plan = m_plans.at(index).toMap();
+    if (rev > plan.value(QStringLiteral("syncedRev")).toLongLong())
+        plan[QStringLiteral("syncedRev")] = rev;
+    if (serverVersion > plan.value(QStringLiteral("syncedVersion")).toLongLong())
+        plan[QStringLiteral("syncedVersion")] = serverVersion;
+    m_plans[index] = plan;
+    emit plansChanged();
+}
+
+void AppCore::rejectPlan(qint64 planId)
+{
+    const int index = indexOfPlan(planId);
+    if (index < 0)
+        return;
+    QVariantMap plan = m_plans.at(index).toMap();
+    plan[QStringLiteral("syncRejected")] = true;
+    m_plans[index] = plan;
+    emit plansChanged();
+}
+
+void AppCore::reconcileServerPlans(const QList<qint64> &serverPlanIds)
+{
+    if (m_demoMode || serverPlanIds.isEmpty())
+        return;
+    const QSet<qint64> onServer(serverPlanIds.cbegin(), serverPlanIds.cend());
+    bool changed = false;
+    for (int i = 0; i < m_plans.size(); ++i) {
+        QVariantMap plan = m_plans.at(i).toMap();
+        const qint64 planId = plan.value(QStringLiteral("planId")).toLongLong();
+        if (planId <= 0 || planId >= kLocalPlanIdBase || onServer.contains(planId)
+            || plan.value(QStringLiteral("deleted")).toBool()
+            || plan.value(QStringLiteral("localOnly")).toBool()
+            || plan.value(QStringLiteral("syncRejected")).toBool())
+            continue;
+        // 以服务端为准：标删除，本地没传完的改动一并作废（不再 PATCH 去复活它）
+        plan[QStringLiteral("deleted")] = true;
+        plan[QStringLiteral("syncedRev")] = plan.value(QStringLiteral("syncRev")).toLongLong();
+        m_plans[i] = plan;
+        logOperation(QStringLiteral("计划"),
+                     QStringLiteral("服务端已删除：%1").arg(planLabel(plan)));
+        changed = true;
+    }
+    if (!changed)
+        return;
+    m_day = clockToday();
+    rebuildToday();
+    emit plansChanged();
+    emit occurrencesChanged();
+    emit currentChanged();
+}
+
+void AppCore::forgetServerPlan(qint64 planId)
+{
+    const int index = indexOfPlan(planId);
+    if (index < 0)
+        return;
+    QVariantMap plan = m_plans.at(index).toMap();
+    plan[QStringLiteral("localOnly")] = true;
+    plan[QStringLiteral("syncedRev")] = 0;
+    plan.remove(QStringLiteral("syncedVersion"));
+    m_plans[index] = plan;
+    emit plansChanged();
+}
+
 void AppCore::applyServerPlans(const QVariantList &serverPlans)
 {
     bool changed = false;
@@ -1891,10 +2118,27 @@ void AppCore::applyServerPlans(const QVariantList &serverPlans)
             continue;
         }
         const QVariantMap local = m_plans.at(index).toMap();
+        // 本地改动还没传上去：不让服务端的旧值盖掉，等 PATCH 回执后再对齐
+        if (local.value(QStringLiteral("localOnly")).toBool()
+            || local.value(QStringLiteral("syncRev")).toLongLong()
+                > local.value(QStringLiteral("syncedRev")).toLongLong())
+            continue;
+        const qint64 serverVersion = server.value(QStringLiteral("version")).toLongLong();
+        if (local.contains(QStringLiteral("syncedVersion"))) {
+            // 本机上传过的计划：只接受比"已确认版本"新的。同版本回放不覆盖——
+            // 云端会把 interval/course 规则降级成 daily、窗口用全局配置，
+            // 覆盖回来会改掉老人本机设好的提醒。
+            if (serverVersion <= local.value(QStringLiteral("syncedVersion")).toLongLong())
+                continue;
+            QVariantMap merged = server;
+            merged[QStringLiteral("syncedVersion")] = serverVersion;
+            m_plans[index] = merged;
+            changed = true;
+            continue;
+        }
         // 规范 §9：冲突以服务端为准。版本高或相等才接受（相等通常就是
         // 同一条回放，覆盖无副作用）。
-        if (server.value(QStringLiteral("version")).toLongLong()
-            >= local.value(QStringLiteral("version")).toLongLong()) {
+        if (serverVersion >= local.value(QStringLiteral("version")).toLongLong()) {
             m_plans[index] = server;
             changed = true;
         }

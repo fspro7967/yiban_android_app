@@ -62,6 +62,29 @@ public:
     void rejectRecord(qint64 recordId);
     // PATCH 回 404（服务端没有这条）：清掉 serverRecordId，下一轮重新 POST。
     void forgetServerRecord(qint64 recordId);
+
+    // ---- 计划上传队列（规范 §8：POST / PATCH / DELETE /v1/plans）----
+    // 真实数据域里本机新建的计划先用本地号段（kLocalPlanIdBase 起）并标 localOnly，
+    // 避免和服务端自增的 plan_id 撞号；POST 回执拿到服务端 plan_id 后整体换号
+    // （计划、今天的 occurrence、事件、删除/跳过暂存全部跟着改）。
+    // 同步字段：localOnly（待 POST）、syncRev/syncedRev（改/删/恢复的版本）、
+    // syncedVersion（服务端已确认的 version）、syncRejected（服务端拒收，不再重传）。
+    // 待上传每项带 op："create" / "update" / "delete"。演示数据域一律不上传。
+    QVariantList pendingPlans() const;
+    int pendingPlanCount() const;
+    // 事件里挂在"还没上传的计划"上的先不传：服务端没有那个 occurrence，会被拒收丢掉。
+    QVariantList uploadableEvents() const;
+    // POST 回执：本地号 → 服务端号；serverVersion 为 0 表示回执没带版本（按 1）。
+    void markPlanCreated(qint64 localPlanId, qint64 serverPlanId, qint64 rev, qint64 serverVersion);
+    // PATCH / DELETE 回执。
+    void markPlanSynced(qint64 planId, qint64 rev, qint64 serverVersion);
+    void rejectPlan(qint64 planId);
+    // PATCH 404：服务端没有这条，改回 localOnly 重新 POST（届时再换号）。
+    void forgetServerPlan(qint64 planId);
+    // 全量拉取（since=0）后对账：本地有、服务端全量名单里没有的计划按"服务端已删除"处理。
+    // 云端看板删计划是硬删除（整行 DELETE），增量拉取永远收不到删除标记，只能靠对账。
+    // 只对服务端号段（< 本地号段、非 localOnly）的计划做；名单为空时不对账（防误删）。
+    void reconcileServerPlans(const QList<qint64> &serverPlanIds);
     // 服务端下发（snake→camel 已由 SyncVM 转好）：按 planId 合并，
     // 版本 >= 本地才接受（规范 §9：冲突以服务端为准）。
     void applyServerPlans(const QVariantList &serverPlans);

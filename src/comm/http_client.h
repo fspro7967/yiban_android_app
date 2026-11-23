@@ -52,6 +52,8 @@ public:
     virtual quint64 getJson(const QString &path, const QUrlQuery &query) = 0;
     // 记录修订（PATCH /v1/records/{id}）用；重试/回执语义与 postJson 相同。
     virtual quint64 patchJson(const QString &path, const QJsonObject &body) = 0;
+    // 计划删除（DELETE /v1/plans/{id}）用；无请求体。
+    virtual quint64 deleteJson(const QString &path) = 0;
 
 signals:
     // 合约：reply/failed 不得在 postJson/getJson 的调用栈内**同步**发出
@@ -75,6 +77,7 @@ public:
     quint64 postJson(const QString &path, const QJsonObject &body) override;
     quint64 getJson(const QString &path, const QUrlQuery &query) override;
     quint64 patchJson(const QString &path, const QJsonObject &body) override;
+    quint64 deleteJson(const QString &path) override;
 
 private:
     quint64 failLater(const QByteArray &verb, const QString &path);
@@ -102,6 +105,7 @@ public:
     quint64 postJson(const QString &path, const QJsonObject &body) override;
     quint64 getJson(const QString &path, const QUrlQuery &query) override;
     quint64 patchJson(const QString &path, const QJsonObject &body) override;
+    quint64 deleteJson(const QString &path) override;
 
     // 配对成功后由 DeviceVM 写入；同时落盘，重启后仍然带着
     void setToken(const QString &token);
@@ -113,7 +117,7 @@ private:
         QString path;
         QUrlQuery query;
         QByteArray body;
-        QByteArray verb = "POST"; // GET / POST / PATCH
+        QByteArray verb = "POST"; // GET / POST / PATCH / DELETE
         int attempt = 0;
     };
 

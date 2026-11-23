@@ -93,6 +93,11 @@ quint64 OfflineHttpClient::patchJson(const QString &path, const QJsonObject &bod
     return failLater("PATCH", path);
 }
 
+quint64 OfflineHttpClient::deleteJson(const QString &path)
+{
+    return failLater("DELETE", path);
+}
+
 // ---------------------------------------------------------------- 真实实现
 
 NetworkHttpClient::NetworkHttpClient(QObject *parent)
@@ -190,6 +195,15 @@ quint64 NetworkHttpClient::patchJson(const QString &path, const QJsonObject &bod
     return enqueue(job);
 }
 
+quint64 NetworkHttpClient::deleteJson(const QString &path)
+{
+    Job job;
+    job.id = m_nextId++;
+    job.path = path;
+    job.verb = "DELETE";
+    return enqueue(job);
+}
+
 quint64 NetworkHttpClient::enqueue(const Job &job)
 {
     if (!isOnline()) {
@@ -240,6 +254,8 @@ void NetworkHttpClient::dispatch(const Job &job)
         reply = m_net->get(request);
     else if (job.verb == "POST")
         reply = m_net->post(request, job.body);
+    else if (job.verb == "DELETE")
+        reply = m_net->deleteResource(request);
     else
         reply = m_net->sendCustomRequest(request, job.verb, job.body);
     m_replyIds.insert(reply, job.id);
