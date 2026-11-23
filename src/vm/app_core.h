@@ -114,6 +114,12 @@ public:
     // 给单测隔离用，也可作为管理后台"清除本机数据"的落点。
     void resetStorage();
 
+    // ---- 测试辅助：可注入时钟（改时间/跨天/升级链的用例用）----
+    // 传 0 恢复系统时间。只影响本类的"现在"和"今天"，不碰系统时钟。
+    void setClockForTests(qint64 nowMs);
+    // 立刻跑一次 tick（等价于定时器到点），便于用例推进时间。
+    void tickForTests();
+
 signals:
     void occurrencesChanged();
     void currentChanged();
@@ -126,6 +132,8 @@ signals:
     void demoModeChanged();
     void operationLogChanged();
     void toast(const QString &text);
+    // 升级等级变化（I2：0=未到点，1=已提醒，2=语音加强，3=通知家人）。
+    void escalationChanged(qint64 occurrenceId, int level);
     // 事件日志变化（新事件入队 / 事件被 ack）：SyncVM 据此触发上传
     void eventsChanged();
 
@@ -167,6 +175,14 @@ private:
     void fireDue(qint64 occurrenceId);
     void appendEvent(qint64 occurrenceId, const QString &action, const QString &reason);
 
+    // ---- 时间源：默认系统时钟，用例可注入 ----
+    qint64 clockNowMs() const;
+    QDate clockToday() const;
+    // 把一条 notified 的提醒按"提醒已过多长时间"推进升级等级；返回新等级。
+    int advanceEscalation(int index);
+    // 给发生记录补上升级等级与"下一级还有多少秒"（I2 对外字段）。
+    QVariantMap withEscalationDeadline(QVariantMap occ) const;
+
     // ---- 本地持久化（SQLite）----
     // 只落真实数据域的整份快照；演示域仍是内存快照（重启即重置，符合 README 的约定）。
     void openDatabase();
@@ -178,6 +194,8 @@ private:
 
     bool m_dbReady = false;
     bool m_persistPending = false;
+    // 0 = 用系统时间；>0 = 用例注入的"现在"（毫秒时间戳）。
+    qint64 m_clockOverrideMs = 0;
     QString m_dbPath;
 
     int indexOfOccurrence(qint64 id) const;

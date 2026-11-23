@@ -27,6 +27,12 @@ constexpr qint64 kSnoozeMinutes = 10;
 constexpr int kMaxSnooze = 3;
 constexpr int kDefaultWindowMin = 30;
 constexpr int kDefaultEscalateMin = 15;
+// 升级链第二级（语音加强）的固定阀值：到点后 2 分钟仍未确认。
+constexpr int kEscalationVoiceMin = 2;
+// 已 ack / 被拒的事件只保留最近这么多条；待上传（serverSeq == 0）一条都不丢。
+constexpr int kMaxSyncedEvents = 800;
+// 内存里也设上限，防止长时间运行把 m_events 撑爆。
+constexpr int kMaxEventsInMemory = 2000;
 constexpr int kMaxOperationLog = 200;
 
 // 本地库连接名（同一个进程里只开一条连接）。
@@ -162,7 +168,7 @@ bool planAllowsLate(const QVariantMap &plan)
 AppCore::AppCore(QObject *parent)
     : QObject(parent)
 {
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     m_nowMs = QDateTime::currentMSecsSinceEpoch();
 
     m_tick.setInterval(1000);
@@ -349,7 +355,7 @@ void AppCore::clearActive()
     m_caregiverName.clear();
     m_caregiverPhone.clear();
     // 真实数据从第一次进入真实域的这一天开始统计，之前的日期不出现在统计里。
-    m_startDate = QDate::currentDate();
+    m_startDate = clockToday();
     m_history.clear();
     m_deletedOccurrences.clear();
     m_skippedOccurrences.clear();
@@ -398,7 +404,7 @@ void AppCore::setDemoMode(bool on)
         m_realData = snapshot();
 
     m_demoMode = on;
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     m_nowMs = QDateTime::currentMSecsSinceEpoch();
     applySnapshot(on ? m_demoData : m_realData);
 
@@ -420,7 +426,7 @@ void AppCore::setProfile(const QString &elderName, const QString &caregiverName,
 
 void AppCore::onTick()
 {
-    const QDate today = QDate::currentDate();
+    const QDate today = clockToday();
     if (today != m_day) {
         archiveDay(m_day, m_occurrences);
         m_deletedOccurrences.clear();
@@ -429,14 +435,15 @@ void AppCore::onTick()
         rebuildToday();
     }
 
-    m_nowMs = QDateTime::currentMSecsSinceEpoch();
+    m_nowMs = clockNowMs();
     emit nowChanged();
 
     bool changed = false;
     QList<qint64> toFire;
     QList<qint64> toMiss;
 
-    const int nowMinutes = QTime::currentTime().hour() * 60 + QTime::currentTime().minute();
+    const QTime nowTime = QDateTime::fromMSecsSinceEpoch(m_nowMs).time();
+    const int nowMinutes = nowTime.hour() * 60 + nowTime.minute();
     for (const QVariant &entry : std::as_const(m_occurrences)) {
         const QVariantMap occ = entry.toMap();
         const QString state = occ.value(QStringLiteral("state")).toString();
@@ -493,6 +500,21 @@ void AppCore::onTick()
         appendEvent(id, QStringLiteral("miss"), QStringLiteral("window_expired"));
         logOperation(QStringLiteral("提醒"), QStringLiteral("过时未确认：%1").arg(occurrenceLabel(occ)));
         changed = true;
+    }
+
+    // 升级链（R1-3 / I2）：提醒发出后按"已过多长时间"逐级推进，到顶就通知家人。
+    QList<qint64> toEscalate;
+    for (int i = 0; i < m_occurrences.size(); ++i) {
+        const int level = advanceEscalation(i);
+        if (level < 3)
+            continue;
+        const QVariantMap occ = m_occurrences.at(i).toMap();
+        if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("notified"))
+            toEscalate.append(occ.value(QStringLiteral("occurrenceId")).toLongLong());
+    }
+    for (qint64 id : toEscalate) {
+        if (escalate(id))
+            changed = true;
     }
 
     if (changed) {
@@ -694,6 +716,8 @@ QVariantMap AppCore::publicOccurrence(const QVariantMap &plan, const QVariantMap
     out[QStringLiteral("canConfirm")] = state != QStringLiteral("confirmed") && (allowLate || !late);
     out[QStringLiteral("canSnooze")] = state != QStringLiteral("confirmed")
         && snoozeCount < kMaxSnooze;
+    // 升级链对外字段（I2）：0=未到点，1=已提醒，2=语音加强，3=通知家人。
+    out[QStringLiteral("escalationLevel")] = occ.value(QStringLiteral("escalationLevel")).toInt();
     return out;
 }
 
@@ -705,7 +729,7 @@ QVariantList AppCore::occurrencesToday() const
         const int planIndex = indexOfPlan(occ.value(QStringLiteral("planId")).toLongLong());
         if (planIndex < 0)
             continue;
-        out.append(publicOccurrence(m_plans.at(planIndex).toMap(), occ));
+        out.append(withEscalationDeadline(publicOccurrence(m_plans.at(planIndex).toMap(), occ)));
     }
     std::sort(out.begin(), out.end(), [](const QVariant &a, const QVariant &b) {
         return a.toMap().value(QStringLiteral("dueTs")).toLongLong()
@@ -792,7 +816,8 @@ QVariantMap AppCore::currentOccurrence() const
     if (m_occurrences.isEmpty())
         return {};
 
-    const int nowMinutes = QTime::currentTime().hour() * 60 + QTime::currentTime().minute();
+    const QTime clockTime = QDateTime::fromMSecsSinceEpoch(clockNowMs()).time();
+    const int nowMinutes = clockTime.hour() * 60 + clockTime.minute();
     QVariantMap best;
     int bestDiff = INT_MAX;
 
@@ -821,7 +846,9 @@ QVariantMap AppCore::currentOccurrence() const
 
         if (diff < bestDiff) {
             const int planIndex = indexOfPlan(occ.value(QStringLiteral("planId")).toLongLong());
-            best = planIndex >= 0 ? publicOccurrence(m_plans.at(planIndex).toMap(), occ) : occ;
+            best = planIndex >= 0
+                ? withEscalationDeadline(publicOccurrence(m_plans.at(planIndex).toMap(), occ))
+                : withEscalationDeadline(occ);
             best[QStringLiteral("diffMinutes")] = diff;
             best[QStringLiteral("displayTime")] = display;
             best[QStringLiteral("dueNow")] = diff == 0;
@@ -839,6 +866,10 @@ void AppCore::fireDue(qint64 occurrenceId)
     QVariantMap occ = m_occurrences.at(index).toMap();
     occ[QStringLiteral("state")] = QStringLiteral("notified");
     occ[QStringLiteral("snoozeUntilTs")] = 0;
+    // 升级链从这个时刻开始计时（不是 dueTs）：App 被杀一夜回来时，
+    // 不能一睁眼就把 15 分钟前的提醒直接升级成打电话。
+    occ[QStringLiteral("notifiedAtTs")] = m_nowMs;
+    occ[QStringLiteral("escalationLevel")] = 1;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("fire"), QString());
     logOperation(QStringLiteral("提醒"), QStringLiteral("到点提醒：%1").arg(occurrenceLabel(occ)));
@@ -846,6 +877,63 @@ void AppCore::fireDue(qint64 occurrenceId)
     const int planIndex = indexOfPlan(occ.value(QStringLiteral("planId")).toLongLong());
     if (planIndex >= 0)
         emit reminderDue(publicOccurrence(m_plans.at(planIndex).toMap(), occ));
+    emit escalationChanged(occurrenceId, 1);
+}
+
+int AppCore::advanceEscalation(int index)
+{
+    if (index < 0 || index >= m_occurrences.size())
+        return 0;
+    QVariantMap occ = m_occurrences.at(index).toMap();
+    const qint64 occurrenceId = occ.value(QStringLiteral("occurrenceId")).toLongLong();
+    if (occ.value(QStringLiteral("state")).toString() != QStringLiteral("notified"))
+        return occ.value(QStringLiteral("escalationLevel")).toInt();
+
+    qint64 notifiedAt = occ.value(QStringLiteral("notifiedAtTs")).toLongLong();
+    if (notifiedAt <= 0) {
+        // 老数据 / 服务端下发的 notified 没有基线：从这一刻起算，避免瞬间升级。
+        notifiedAt = m_nowMs;
+        occ[QStringLiteral("notifiedAtTs")] = notifiedAt;
+        m_occurrences[index] = occ;
+    }
+
+    const int escalateMin = qMax(1, occ.value(QStringLiteral("escalateAfterMin")).toInt());
+    const qint64 elapsedMs = qMax<qint64>(0, m_nowMs - notifiedAt);
+    int level = 1;
+    if (elapsedMs >= static_cast<qint64>(escalateMin) * 60 * 1000)
+        level = 3;
+    else if (elapsedMs >= static_cast<qint64>(kEscalationVoiceMin) * 60 * 1000)
+        level = 2;
+
+    const int previous = occ.value(QStringLiteral("escalationLevel")).toInt();
+    if (level != previous) {
+        occ[QStringLiteral("escalationLevel")] = level;
+        m_occurrences[index] = occ;
+        emit escalationChanged(occurrenceId, level);
+    }
+    return level;
+}
+
+QVariantMap AppCore::withEscalationDeadline(QVariantMap occ) const
+{
+    const int level = occ.value(QStringLiteral("escalationLevel")).toInt();
+    int nextEscalationInSec = -1;
+    if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("notified")) {
+        const qint64 notifiedAt = occ.value(QStringLiteral("notifiedAtTs")).toLongLong();
+        if (notifiedAt > 0) {
+            const int escalateMin = qMax(1, occ.value(QStringLiteral("escalateAfterMin")).toInt());
+            qint64 nextTs = 0;
+            if (level <= 1)
+                nextTs = notifiedAt + static_cast<qint64>(kEscalationVoiceMin) * 60 * 1000;
+            else if (level == 2)
+                nextTs = notifiedAt + static_cast<qint64>(escalateMin) * 60 * 1000;
+            nextEscalationInSec =
+                nextTs > m_nowMs ? static_cast<int>((nextTs - m_nowMs + 999) / 1000) : 0;
+        }
+    }
+    occ[QStringLiteral("escalationLevel")] = level;
+    occ[QStringLiteral("nextEscalationInSec")] = nextEscalationInSec;
+    return occ;
 }
 
 void AppCore::appendEvent(qint64 occurrenceId, const QString &action, const QString &reason)
@@ -866,7 +954,45 @@ void AppCore::appendEvent(qint64 occurrenceId, const QString &action, const QStr
     event[QStringLiteral("reason")] = reason;
     event[QStringLiteral("serverSeq")] = 0;
     m_events.append(event);
+
+    // 内存上限：从最旧的"已处理"事件开始丢，待上传（serverSeq == 0）的一条都不动。
+    while (m_events.size() > kMaxEventsInMemory) {
+        int victim = -1;
+        for (int i = 0; i < m_events.size(); ++i) {
+            if (m_events.at(i).toMap().value(QStringLiteral("serverSeq")).toLongLong() != 0) {
+                victim = i;
+                break;
+            }
+        }
+        if (victim < 0)
+            break;
+        m_events.removeAt(victim);
+    }
+
     emit eventsChanged();
+}
+
+qint64 AppCore::clockNowMs() const
+{
+    return m_clockOverrideMs > 0 ? m_clockOverrideMs : QDateTime::currentMSecsSinceEpoch();
+}
+
+QDate AppCore::clockToday() const
+{
+    return QDateTime::fromMSecsSinceEpoch(clockNowMs()).date();
+}
+
+void AppCore::setClockForTests(qint64 nowMs)
+{
+    m_clockOverrideMs = nowMs > 0 ? nowMs : 0;
+    m_nowMs = clockNowMs();
+    // 故意不动 m_day：跨天必须由 onTick 自己发现（归档昨天 + 重建今天），
+    // 注入时钟时顺手改 m_day 会把要测的那条路径抄近路跳过。
+}
+
+void AppCore::tickForTests()
+{
+    onTick();
 }
 
 QVariantList AppCore::operationLog() const
@@ -930,6 +1056,8 @@ bool AppCore::confirm(qint64 occurrenceId, QString *error)
     const QString time = hhmmFromMs(occ.value(QStringLiteral("dueTs")).toLongLong());
     occ[QStringLiteral("state")] = QStringLiteral("confirmed");
     occ[QStringLiteral("snoozeUntilTs")] = 0;
+    occ[QStringLiteral("escalationLevel")] = 0;
+    occ[QStringLiteral("notifiedAtTs")] = 0;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("confirm"), QString());
     logOperation(QStringLiteral("提醒"), QStringLiteral("确认完成：%1").arg(occurrenceLabel(occ)));
@@ -965,6 +1093,8 @@ bool AppCore::snooze(qint64 occurrenceId, QString *error)
     occ[QStringLiteral("state")] = QStringLiteral("snoozed");
     occ[QStringLiteral("snoozeCount")] = used + 1;
     occ[QStringLiteral("snoozeUntilTs")] = m_nowMs + kSnoozeMinutes * 60 * 1000;
+    occ[QStringLiteral("escalationLevel")] = 0;
+    occ[QStringLiteral("notifiedAtTs")] = 0;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("snooze"), QString());
     logOperation(QStringLiteral("提醒"),
@@ -1002,6 +1132,14 @@ bool AppCore::undoOccurrence(qint64 occurrenceId, QString *error)
 
     occ[QStringLiteral("state")] = next;
     occ[QStringLiteral("snoozeUntilTs")] = 0;
+    if (next == QStringLiteral("notified")) {
+        // 撤回确认后回到待确认：升级链从现在重新计时。
+        occ[QStringLiteral("notifiedAtTs")] = m_nowMs;
+        occ[QStringLiteral("escalationLevel")] = 1;
+    } else {
+        occ[QStringLiteral("notifiedAtTs")] = 0;
+        occ[QStringLiteral("escalationLevel")] = 0;
+    }
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("undo"), QString());
     logOperation(QStringLiteral("提醒"),
@@ -1034,6 +1172,7 @@ bool AppCore::escalate(qint64 occurrenceId, QString *error)
     }
 
     occ[QStringLiteral("state")] = QStringLiteral("escalated");
+    occ[QStringLiteral("escalationLevel")] = 3;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("escalate"), QStringLiteral("timeout"));
     logOperation(QStringLiteral("提醒"),
@@ -1155,7 +1294,7 @@ qint64 AppCore::createPlan(const QVariantMap &plan, QString *error)
     stored[QStringLiteral("deleted")] = false;
     m_plans.append(stored);
 
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     rebuildToday();
     logOperation(QStringLiteral("计划"),
                  QStringLiteral("新增提醒：%1 %2").arg(planLabel(stored), repeatTextFor(rule)));
@@ -1226,7 +1365,7 @@ bool AppCore::updatePlan(qint64 planId, const QVariantMap &plan, QString *error)
                           occ.value(QStringLiteral("dueTs")).toLongLong());
     }
 
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     rebuildToday();
 
     for (int i = 0; i < m_occurrences.size(); ++i) {
@@ -1261,7 +1400,7 @@ bool AppCore::skipToday(qint64 planId, QString *error)
             *error = QStringLiteral("plan_not_found");
         return false;
     }
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     QVariantList stash;
     for (const QVariant &entry : std::as_const(m_occurrences)) {
         if (entry.toMap().value(QStringLiteral("planId")).toLongLong() == planId)
@@ -1292,7 +1431,7 @@ bool AppCore::skipToday(qint64 planId, QString *error)
 bool AppCore::unskipToday(qint64 planId, QString *error)
 {
     const int index = indexOfPlan(planId);
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     const QString today = m_day.toString(Qt::ISODate);
     if (index < 0
         || !m_plans.at(index).toMap().value(QStringLiteral("skipDates")).toStringList().contains(today)) {
@@ -1340,7 +1479,7 @@ bool AppCore::deletePlan(qint64 planId, QString *error)
     }
     m_deletedOccurrences.insert(planId, stash);
 
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     rebuildToday();
     logOperation(QStringLiteral("计划"), QStringLiteral("删除提醒：%1").arg(planLabel(stored)));
     emit plansChanged();
@@ -1360,7 +1499,7 @@ bool AppCore::restorePlan(qint64 planId, QString *error)
     stored[QStringLiteral("version")] = stored.value(QStringLiteral("version")).toInt() + 1;
     m_plans[index] = stored;
 
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     rebuildTodayFrom(m_occurrences + m_deletedOccurrences.take(planId));
     logOperation(QStringLiteral("计划"), QStringLiteral("撤销删除：%1").arg(planLabel(stored)));
     emit plansChanged();
@@ -1429,7 +1568,7 @@ bool AppCore::removeRecord(qint64 recordId)
 
 int AppCore::waterCups() const
 {
-    const qint64 today0 = midnightMs(QDate::currentDate());
+    const qint64 today0 = midnightMs(clockToday());
     int cups = 0;
     for (const QVariant &entry : m_records) {
         const QVariantMap rec = entry.toMap();
@@ -1486,7 +1625,7 @@ int AppCore::sleepMinutes() const
 
 int AppCore::activityMinutes() const
 {
-    const qint64 today0 = midnightMs(QDate::currentDate());
+    const qint64 today0 = midnightMs(clockToday());
     int minutes = 0;
     for (const QVariant &entry : m_records) {
         const QVariantMap rec = entry.toMap();
@@ -1512,7 +1651,7 @@ QVariantList AppCore::stats(int days) const
     static const QList<int> base7 = {50, 50, 100, 100, 100, 100, 100};
     static const QList<int> base30 = {50, 100, 75, 100, 100, 50, 100, 100, 75, 100};
     const QList<int> &base = days == 7 ? base7 : base30;
-    const QDate today = m_day.isValid() ? m_day : QDate::currentDate();
+    const QDate today = m_day.isValid() ? m_day : clockToday();
 
     int first = days - 1;
     if (!m_demoMode && m_startDate.isValid())
@@ -1667,7 +1806,7 @@ void AppCore::applyServerPlans(const QVariantList &serverPlans)
     }
     if (!changed)
         return;
-    m_day = QDate::currentDate();
+    m_day = clockToday();
     rebuildToday();
     emit plansChanged();
 }
@@ -1896,6 +2035,24 @@ void AppCore::persistNow()
         return query.exec();
     };
 
+    // 事件裁剪：待上传（serverSeq == 0）全留；已处理（ack / 拒绝）只留最近
+    // kMaxSyncedEvents 条。修掉"重启一次就删掉最早事件、连没上传的一起丢"的问题。
+    int handledCount = 0;
+    for (const QVariant &entry : data.events) {
+        if (entry.toMap().value(QStringLiteral("serverSeq")).toLongLong() != 0)
+            ++handledCount;
+    }
+    int handledToSkip = qMax(0, handledCount - kMaxSyncedEvents);
+    QVariantList eventsToPersist;
+    for (const QVariant &entry : data.events) {
+        const bool handled = entry.toMap().value(QStringLiteral("serverSeq")).toLongLong() != 0;
+        if (handled && handledToSkip > 0) {
+            --handledToSkip;
+            continue;
+        }
+        eventsToPersist.append(entry);
+    }
+
     if (ok) {
         for (const QVariant &entry : data.plans)
             ok = insertPlan(entry.toMap()) && ok;
@@ -1903,7 +2060,7 @@ void AppCore::persistNow()
             ok = insertOccurrence(entry.toMap()) && ok;
         for (const QVariant &entry : data.records)
             ok = insertRecord(entry.toMap()) && ok;
-        for (const QVariant &entry : data.events)
+        for (const QVariant &entry : eventsToPersist)
             ok = insertEvent(entry.toMap()) && ok;
     }
 
@@ -1996,11 +2153,8 @@ bool AppCore::loadRealData(DataSnapshot *data)
     while (query.next())
         loaded.plans.append(jsonToVariantMap(query.value(0).toByteArray()));
 
-    if (!query.exec(QStringLiteral("SELECT json FROM occurrences ORDER BY dueTs"))) {
-        // 旧库没有 dueTs 列也没关系：按 id 取，顺序在内存里由 occurrencesToday() 再排。
-        if (!query.exec(QStringLiteral("SELECT json FROM occurrences ORDER BY id")))
-            return false;
-    }
+    if (!query.exec(QStringLiteral("SELECT json FROM occurrences ORDER BY id")))
+        return false;
     while (query.next())
         loaded.occurrences.append(jsonToVariantMap(query.value(0).toByteArray()));
 
@@ -2009,7 +2163,8 @@ bool AppCore::loadRealData(DataSnapshot *data)
     while (query.next())
         loaded.records.append(jsonToVariantMap(query.value(0).toByteArray()));
 
-    if (!query.exec(QStringLiteral("SELECT json FROM events ORDER BY ts LIMIT 1000")))
+    // 事件全量读回：写入时已裁剪（待上传全留 + 最近 800 条已处理），不再 LIMIT 截断。
+    if (!query.exec(QStringLiteral("SELECT json FROM events ORDER BY ts")))
         return false;
     while (query.next())
         loaded.events.append(jsonToVariantMap(query.value(0).toByteArray()));

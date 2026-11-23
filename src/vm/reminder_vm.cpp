@@ -13,6 +13,9 @@ ReminderVM::ReminderVM(QObject *parent)
     connect(core, &AppCore::nowChanged, this, &ReminderVM::nowChanged);
     connect(core, &AppCore::reminderDue, this, &ReminderVM::reminderDue);
     connect(core, &AppCore::toast, this, &ReminderVM::toast);
+    connect(core, &AppCore::escalationChanged, this, &ReminderVM::escalationChanged);
+    // 等级变化也要刷新 current：QML 从 current.escalationLevel 读状态。
+    connect(core, &AppCore::escalationChanged, this, &ReminderVM::currentChanged);
 }
 
 QVariantList ReminderVM::today() const
