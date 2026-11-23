@@ -64,4 +64,11 @@ compile_commands.json
 .gradle-home/
 .android-home/
 build-desktop/
+
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+
+# 只忽略解压目录；zip 产物直接提交进仓库
+/release/yiban-desktop/
 caremate_hardware

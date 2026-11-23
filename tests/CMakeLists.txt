@@ -70,3 +70,31 @@ target_include_directories(tst_platform PRIVATE
 target_link_libraries(tst_platform PRIVATE Qt6::Core Qt6::Test)
 
 add_test(NAME platform_bridge COMMAND tst_platform)
+
+# B2：同步链路（SyncVM + AppCore 队列接口）。假 HttpClient 回放 canned
+# 响应，不联网；锁的是规范 §8/§9 的上传/拉取/游标语义。
+qt_add_executable(tst_sync
+    tst_sync.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.h
+    ${CMAKE_SOURCE_DIR}/src/vm/sync_vm.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/sync_vm.h
+    ${CMAKE_SOURCE_DIR}/src/vm/profile_vm.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/profile_vm.h
+    ${CMAKE_SOURCE_DIR}/src/vm/facade_errors.h
+    ${CMAKE_SOURCE_DIR}/src/comm/app_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/app_settings.h
+    ${CMAKE_SOURCE_DIR}/src/comm/http_client.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/http_client.h
+)
+
+target_include_directories(tst_sync PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/vm
+    ${CMAKE_SOURCE_DIR}/src/comm
+)
+target_link_libraries(tst_sync PRIVATE Qt6::Core Qt6::Qml Qt6::Network Qt6::Test Qt6::Sql)
+
+add_test(NAME sync_flow COMMAND tst_sync)
+# AppCore 落 SQLite 之后（S1）同步测试也会开库：同样隔离到构建目录。
+set_tests_properties(sync_flow PROPERTIES ENVIRONMENT
+    "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_sync.sqlite")

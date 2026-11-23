@@ -38,6 +38,20 @@ public:
     QVariantList eventLog() const;
     QString eventLogCsv() const;
 
+    // ---- 同步队列（B2 联调；B1 换 SQLite 实现时保持这三条语义）----
+    // 待上传事件：serverSeq == 0 的（已上传的 >0）。
+    QVariantList pendingEvents() const;
+    // 按 /v1/events 的 ack 回写：[{eventId, serverSeq}]，重复 ack 幂等。
+    void markEventsSynced(const QVariantList &acked);
+    // 服务端明确拒绝的事件（如过时状态）标记过期（serverSeq = -1）：
+    // 不再重传，但留在日志里可导出排查。
+    void expireEvents(const QStringList &eventIds);
+    // 服务端下发（snake→camel 已由 SyncVM 转好）：按 planId 合并，
+    // 版本 >= 本地才接受（规范 §9：冲突以服务端为准）。
+    void applyServerPlans(const QVariantList &serverPlans);
+    // 按 occurrenceId 合并服务端状态；本地已终态（confirmed/escalated）不被回退。
+    void applyServerOccurrences(const QVariantList &serverOccurrences);
+
     // ---- 操作日志（管理后台查看；和上面的同步事件队列是两回事）----
     // 每项 {seq, ts, category, text}，新的在前。只留最近 kMaxOperationLog 条，
     // 不分真实/演示数据域：切换数据域本身也是一条操作。
@@ -112,6 +126,8 @@ signals:
     void demoModeChanged();
     void operationLogChanged();
     void toast(const QString &text);
+    // 事件日志变化（新事件入队 / 事件被 ack）：SyncVM 据此触发上传
+    void eventsChanged();
 
 private slots:
     void onTick();

@@ -191,6 +191,9 @@ AppCore::AppCore(QObject *parent)
     connect(this, &AppCore::plansChanged, this, &AppCore::schedulePersist);
     connect(this, &AppCore::recordsChanged, this, &AppCore::schedulePersist);
     connect(this, &AppCore::profileChanged, this, &AppCore::schedulePersist);
+    // 同步 ack / 拒绝只改事件的 serverSeq，不发上面几个信号；不单独接上的话
+    // 重启后已上传的事件会被当成待上传再发一遍。
+    connect(this, &AppCore::eventsChanged, this, &AppCore::schedulePersist);
 }
 
 AppCore *AppCore::instance()
@@ -863,6 +866,7 @@ void AppCore::appendEvent(qint64 occurrenceId, const QString &action, const QStr
     event[QStringLiteral("reason")] = reason;
     event[QStringLiteral("serverSeq")] = 0;
     m_events.append(event);
+    emit eventsChanged();
 }
 
 QVariantList AppCore::operationLog() const
@@ -1582,6 +1586,130 @@ QString AppCore::eventLogCsv() const
     return csv;
 }
 
+QVariantList AppCore::pendingEvents() const
+{
+    QVariantList out;
+    for (const QVariant &entry : m_events) {
+        const QVariantMap event = entry.toMap();
+        if (event.value(QStringLiteral("serverSeq")).toLongLong() == 0)
+            out.append(event);
+    }
+    return out;
+}
+
+void AppCore::markEventsSynced(const QVariantList &acked)
+{
+    bool changed = false;
+    for (const QVariant &entry : acked) {
+        const QVariantMap ack = entry.toMap();
+        const QString eventId = ack.value(QStringLiteral("eventId")).toString();
+        const qint64 seq = ack.value(QStringLiteral("serverSeq")).toLongLong();
+        if (eventId.isEmpty() || seq <= 0)
+            continue;
+        for (int i = 0; i < m_events.size(); ++i) {
+            QVariantMap event = m_events.at(i).toMap();
+            if (event.value(QStringLiteral("eventId")).toString() != eventId
+                || event.value(QStringLiteral("serverSeq")).toLongLong() != 0)
+                continue;
+            event[QStringLiteral("serverSeq")] = seq;
+            m_events[i] = event;
+            changed = true;
+            break;
+        }
+    }
+    if (changed)
+        emit eventsChanged();
+}
+
+void AppCore::expireEvents(const QStringList &eventIds)
+{
+    bool changed = false;
+    for (int i = 0; i < m_events.size(); ++i) {
+        QVariantMap event = m_events.at(i).toMap();
+        if (event.value(QStringLiteral("serverSeq")).toLongLong() != 0)
+            continue;
+        if (!eventIds.contains(event.value(QStringLiteral("eventId")).toString()))
+            continue;
+        event[QStringLiteral("serverSeq")] = -1; // -1 = 服务端已拒绝，不再重传
+        m_events[i] = event;
+        changed = true;
+    }
+    if (changed)
+        emit eventsChanged();
+}
+
+void AppCore::applyServerPlans(const QVariantList &serverPlans)
+{
+    bool changed = false;
+    for (const QVariant &entry : serverPlans) {
+        const QVariantMap server = entry.toMap();
+        const qint64 planId = server.value(QStringLiteral("planId")).toLongLong();
+        if (planId <= 0)
+            continue;
+        const int index = indexOfPlan(planId);
+        if (index < 0) {
+            // 服务端新计划：直接入库；把本地 id 计数器推到它之上，防止
+            // 之后本地 createPlan 撞出同一个 planId。
+            if (m_nextPlanId <= planId)
+                m_nextPlanId = planId + 1;
+            m_plans.append(server);
+            changed = true;
+            continue;
+        }
+        const QVariantMap local = m_plans.at(index).toMap();
+        // 规范 §9：冲突以服务端为准。版本高或相等才接受（相等通常就是
+        // 同一条回放，覆盖无副作用）。
+        if (server.value(QStringLiteral("version")).toLongLong()
+            >= local.value(QStringLiteral("version")).toLongLong()) {
+            m_plans[index] = server;
+            changed = true;
+        }
+    }
+    if (!changed)
+        return;
+    m_day = QDate::currentDate();
+    rebuildToday();
+    emit plansChanged();
+}
+
+void AppCore::applyServerOccurrences(const QVariantList &serverOccurrences)
+{
+    bool changed = false;
+    for (const QVariant &entry : serverOccurrences) {
+        const QVariantMap server = entry.toMap();
+        const qint64 occurrenceId =
+            server.value(QStringLiteral("occurrenceId")).toLongLong();
+        const int index = indexOfOccurrence(occurrenceId);
+        // 服务端会下发昨天/明天的条目，端上只管今天清单里的
+        if (index < 0)
+            continue;
+        QVariantMap local = m_occurrences.at(index).toMap();
+        const QString localState = local.value(QStringLiteral("state")).toString();
+        const QString serverState = server.value(QStringLiteral("state")).toString();
+        // 本地已终态的不回退：确认/升级是老人亲自做的动作，
+        // 服务端旧快照不能把它改回去（missed 是自动迁移，服从服务端）。
+        if (localState == QStringLiteral("confirmed")
+            || localState == QStringLiteral("escalated"))
+            continue;
+        if (serverState == localState
+            && server.value(QStringLiteral("snoozeCount")).toInt()
+                == local.value(QStringLiteral("snoozeCount")).toInt())
+            continue;
+        local[QStringLiteral("state")] = serverState;
+        local[QStringLiteral("snoozeCount")] =
+            server.value(QStringLiteral("snoozeCount")).toInt();
+        local[QStringLiteral("snoozeUntilTs")] =
+            server.value(QStringLiteral("snoozeUntilTs")).toLongLong();
+        m_occurrences[index] = local;
+        changed = true;
+    }
+    if (!changed)
+        return;
+    rebuildToday();
+    emit occurrencesChanged();
+    emit currentChanged();
+}
+
 int AppCore::indexOfOccurrence(qint64 id) const
 {
     for (int i = 0; i < m_occurrences.size(); ++i) {
@@ -1762,7 +1890,8 @@ void AppCore::persistNow()
         query.addBindValue(event.value(QStringLiteral("occurrenceId")).toLongLong());
         query.addBindValue(event.value(QStringLiteral("action")).toString());
         query.addBindValue(event.value(QStringLiteral("ts")).toLongLong());
-        query.addBindValue(event.value(QStringLiteral("synced"), 0).toInt());
+        // serverSeq：0 = 待上传，>0 = 服务端已收，-1 = 服务端已拒绝（同样不再上传）
+        query.addBindValue(event.value(QStringLiteral("serverSeq")).toLongLong() != 0 ? 1 : 0);
         query.addBindValue(variantMapToJson(event));
         return query.exec();
     };

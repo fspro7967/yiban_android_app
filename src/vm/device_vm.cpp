@@ -13,12 +13,14 @@
 #include <QDateTime>
 #include <QNetworkInformation>
 #include <QDebug>
+#include <QJsonArray>
 #include <QLocale>
 #include <QRegularExpression>
 #include <QTextToSpeech>
 #include <QTime>
 #include <QTimer>
 #include <QUrl>
+#include <QUrlQuery>
 
 namespace {
 
@@ -51,13 +53,22 @@ DeviceVM::DeviceVM(QObject *parent)
     m_paired = settings->paired();
     m_role = settings->role();
     m_serverUrl = settings->serverUrl();
+    m_hasToken = !settings->token().trimmed().isEmpty();
 
     m_http = new NetworkHttpClient(this);
     connect(m_http, &HttpClient::reply, this,
             [this](quint64 id, int status, const QJsonObject &body) {
+                if (id != 0 && id == m_testRequestId) {
+                    handleTestReply(id, status, body);
+                    return;
+                }
                 handlePairReply(id, status, body);
             });
     connect(m_http, &HttpClient::failed, this, [this](quint64 id, const QString &code) {
+        if (id != 0 && id == m_testRequestId) {
+            handleTestFailed(id, code);
+            return;
+        }
         handlePairFailed(id, code);
     });
 
@@ -95,6 +106,7 @@ DeviceVM::DeviceVM(QObject *parent)
             [this] { QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms); });
 
     m_permissionCache = Platform::grantedLabels();
+    m_permissionDiagnostics = Platform::permissionDiagnostics();
     // 联网状态直接听系统的：Android 上是 ConnectivityManager，桌面是 NetworkManager。
     // 后端加载不了（极少数定制系统、无 NetworkManager 的桌面）时保持 unknown，不假装在线。
     m_networkInfoReady = QNetworkInformation::loadBackendByFeatures(
@@ -156,6 +168,7 @@ void DeviceVM::tick()
         emit voiceChanged();
     }
     refreshPermissions();
+    refreshToken();
     // 联网状态不用轮询：QNetworkInformation 的信号直接接到 networkChanged（见构造函数）
 
     // 网络日志：2 秒同步一次就够看，管理页打开时不会漏掉任何一次交换
@@ -169,10 +182,21 @@ void DeviceVM::tick()
 void DeviceVM::refreshPermissions()
 {
     const QStringList current = Platform::grantedLabels();
-    if (current == m_permissionCache)
+    const QVariantList diagnostics = Platform::permissionDiagnostics();
+    if (current == m_permissionCache && diagnostics == m_permissionDiagnostics)
         return;
     m_permissionCache = current;
+    m_permissionDiagnostics = diagnostics;
     emit permissionChanged();
+}
+
+void DeviceVM::refreshToken()
+{
+    const bool hasToken = !AppSettings::instance()->token().trimmed().isEmpty();
+    if (hasToken == m_hasToken)
+        return;
+    m_hasToken = hasToken;
+    emit tokenChanged();
 }
 
 // ---------------------------------------------------------------- 属性
@@ -294,30 +318,64 @@ QString DeviceVM::networkType() const
 
 bool DeviceVM::saveNetwork(const QString &serverUrl)
 {
-    const QString trimmed = serverUrl.trimmed();
-    if (!trimmed.startsWith(QStringLiteral("https://"))
-        && !trimmed.startsWith(QStringLiteral("http://"))) {
+    const QString trimmed = normalizeServerUrl(serverUrl);
+    if (trimmed.isEmpty()) {
         emit commandRejected(QStringLiteral("bad_server_url"),
-                             QStringLiteral("服务器地址要以 https:// 开头"));
+                             QStringLiteral("服务器地址要以 http:// 或 https:// 开头，且长度在 12–200 之间"));
         return false;
     }
-    if (trimmed.length() < 12 || trimmed.length() > 200) {
-        emit commandRejected(QStringLiteral("bad_server_url"),
-                             QStringLiteral("服务器地址长度不对"));
-        return false;
-    }
+
     m_serverUrl = trimmed;
     AppCore::instance()->logOperation(QStringLiteral("管理"),
                                       QStringLiteral("保存服务器地址：%1").arg(trimmed));
     AppSettings::instance()->setServerUrl(trimmed);
     emit networkChanged();
-    emit toast(QStringLiteral("服务器地址已保存"));
+    emit toast(QStringLiteral("服务器地址已保存：") + trimmed);
+    return true;
+}
+
+bool DeviceVM::saveToken(const QString &token)
+{
+    const QString trimmed = token.trimmed();
+    if (trimmed.isEmpty()) {
+        AppSettings::instance()->clearToken();
+        AppSettings::instance()->setPairing(false, QString());
+        m_hasToken = false;
+        emit tokenChanged();
+        emit pairingChanged();
+        emit toast(QStringLiteral("令牌已清除，请重新配对"));
+        return true;
+    }
+    if (trimmed.length() < 8 || trimmed.length() > 256) {
+        emit commandRejected(QStringLiteral("bad_token"),
+                             QStringLiteral("令牌长度不对，请复制完整的 ses-… 令牌"));
+        return false;
+    }
+
+    AppSettings::instance()->setToken(trimmed);
+    // 新令牌 = 新会话：游标归零，下一轮全量重拉，避免旧游标漏数据。
+    AppSettings::instance()->setStateSeq(0);
+    AppSettings::instance()->setPlansSeq(0);
+    AppSettings::instance()->setLastSyncTs(0);
+    AppSettings::instance()->setPairing(true, m_role);
+    m_paired = true;
+    m_hasToken = true;
+    emit tokenChanged();
+    emit pairingChanged();
+    emit toast(QStringLiteral("令牌已保存，点\"测试连接\"确认能不能收到数据"));
     return true;
 }
 
 bool DeviceVM::testingConnection() const
 {
-    return m_probe && m_probe->busy();
+    return (m_probe && m_probe->busy()) || m_testRequestId != 0;
+}
+
+void DeviceVM::finishTest(bool ok, const QString &message)
+{
+    AppCore::instance()->logOperation(
+        QStringLiteral("管理"), QStringLiteral("测试连接 %1：%2").arg(m_probeUrl, message));
+    emit connectionTested(ok, message);
 }
 
 void DeviceVM::testConnection(const QString &serverUrl)
@@ -329,7 +387,8 @@ void DeviceVM::testConnection(const QString &serverUrl)
     const QUrl url(trimmed, QUrl::StrictMode);
     if (!url.isValid() || url.host().isEmpty()
         || (url.scheme() != QStringLiteral("https") && url.scheme() != QStringLiteral("http"))) {
-        emit connectionTested(false, QStringLiteral("服务器地址要以 https:// 开头，后面跟上域名"));
+        emit connectionTested(false,
+                              QStringLiteral("服务器地址要以 http:// 或 https:// 开头，后面跟上域名或 IP"));
         return;
     }
 
@@ -338,17 +397,64 @@ void DeviceVM::testConnection(const QString &serverUrl)
         connect(m_probe, &ConnectionProbe::busyChanged, this, &DeviceVM::testingConnectionChanged);
         connect(m_probe, &ConnectionProbe::finished, this,
                 [this](bool reachable, int, int elapsedMs, const QString &, const QString &message) {
-            const QString text = reachable
-                ? QStringLiteral("%1，用时 %2 毫秒").arg(message).arg(elapsedMs)
-                : message;
-            AppCore::instance()->logOperation(
-                QStringLiteral("管理"), QStringLiteral("测试连接 %1：%2").arg(m_probeUrl, text));
-            emit connectionTested(reachable, text);
+            if (!reachable) {
+                finishTest(false, message);
+                return;
+            }
+            // 第二步：测的就是同步用的地址、手上又有令牌，就带令牌拉一次 /state。
+            // 只探连通的话，令牌过期也会报"连接正常"，联调时分不清是没发出去还是被拒了。
+            if (m_http && m_hasToken && normalizeServerUrl(m_probeUrl) == m_serverUrl) {
+                QUrlQuery query;
+                query.addQueryItem(QStringLiteral("since"), QStringLiteral("0"));
+                m_testRequestId = m_http->getJson(QStringLiteral("/state"), query);
+                if (m_testRequestId != 0) {
+                    emit testingConnectionChanged();
+                    return;
+                }
+            }
+            finishTest(true, QStringLiteral("%1，用时 %2 毫秒").arg(message).arg(elapsedMs));
         });
     }
     m_probeUrl = trimmed;
     m_probe->start(url);
 }
+
+void DeviceVM::handleTestReply(quint64 requestId, int status, const QJsonObject &body)
+{
+    if (requestId != m_testRequestId)
+        return;
+    m_testRequestId = 0;
+    emit testingConnectionChanged();
+
+    if (status >= 200 && status < 300) {
+        const int count = body.value(QStringLiteral("occurrences")).toArray().size();
+        finishTest(true,
+                   QStringLiteral("连接正常：服务器可达、令牌有效，下发 %1 条提醒状态").arg(count));
+        return;
+    }
+    if (status == 401) {
+        finishTest(false, QStringLiteral("服务器可达，但令牌无效：请重新配对或换一个令牌"));
+        return;
+    }
+    const QString detail = body.value(QStringLiteral("detail")).toString();
+    finishTest(false,
+               QStringLiteral("服务器可达，但同步接口返回 %1%2")
+                   .arg(status)
+                   .arg(detail.isEmpty() ? QString() : QStringLiteral("：") + detail));
+}
+
+void DeviceVM::handleTestFailed(quint64 requestId, const QString &code)
+{
+    if (requestId != m_testRequestId)
+        return;
+    m_testRequestId = 0;
+    emit testingConnectionChanged();
+    finishTest(false,
+               code == QStringLiteral("offline")
+                   ? QStringLiteral("服务器可达，但同步请求没发出去：设备显示离线")
+                   : QStringLiteral("服务器可达，但同步请求失败：地址/端口不对或请求超时"));
+}
+
 // ---------------------------------------------------------------- 配对
 
 void DeviceVM::pair(const QString &code, const QString &role)
@@ -372,6 +478,8 @@ void DeviceVM::pair(const QString &code, const QString &role)
     }
 
     QJsonObject body;
+    // CareMate 后端读 pair_code，参考服务端读 code：两个键都带上，双端兼容
+    body.insert(QStringLiteral("pair_code"), code.trimmed());
     body.insert(QStringLiteral("code"), code.trimmed());
     body.insert(QStringLiteral("role"), targetRole);
     body.insert(QStringLiteral("device_id"), AppSettings::instance()->deviceId());
@@ -398,14 +506,39 @@ void DeviceVM::handlePairReply(quint64 requestId, int status, const QJsonObject 
         return;
 
     if (status < 200 || status >= 300) {
-        // 401/409 都是配对码不对或已被用掉，对用户来说是同一件事
-        finishPair(false, m_role, facadeErrorText(QStringLiteral("bad_pair_code")));
+        if (status == 429) {
+            // CareMate 配对限速：同一来源 10 分钟最多 10 次
+            finishPair(false, m_role,
+                       QStringLiteral("配对尝试太频繁，请 10 分钟后再试"));
+            return;
+        }
+        const QString detail = body.value(QStringLiteral("detail")).toString();
+        if (status == 404 && detail.contains(QStringLiteral("pair_code"))) {
+            finishPair(false, m_role,
+                       QStringLiteral("配对码不存在，请找管理员要新的 6 位配对码"));
+            return;
+        }
+        // 401/404/409 对用户来说都是"这个码配不上"，但带上服务端原因好排查。
+        finishPair(false, m_role,
+                   detail.isEmpty() ? facadeErrorText(QStringLiteral("bad_pair_code"))
+                                    : detail);
         return;
     }
 
     const QString token = body.value(QStringLiteral("token")).toString();
-    if (!token.isEmpty())
-        AppSettings::instance()->setToken(token);
+    if (token.trimmed().isEmpty()) {
+        // 200 却没给令牌：不能标记配对成功，否则之后每次同步都是 401。
+        finishPair(false, m_role, QStringLiteral("服务器没有返回令牌，请稍后重试"));
+        return;
+    }
+    AppSettings::instance()->setToken(token);
+    m_hasToken = true;
+    emit tokenChanged();
+
+    // 新令牌 = 新会话：游标归零，下一轮从服务端全量拉计划与状态
+    AppSettings::instance()->setStateSeq(0);
+    AppSettings::instance()->setPlansSeq(0);
+    AppSettings::instance()->setLastSyncTs(0);
 
     // 云端带回的老人/家属档案：写进 AppCore，QML 三个页面都读它
     AppCore::instance()->setProfile(
@@ -713,6 +846,14 @@ void DeviceVM::requestExactAlarmPermission()
         return;
     Platform::requestPermission(Platform::Permission::ExactAlarm);
     emit toast(QStringLiteral("请在设置里允许“闹钟和提醒”，到点才能准时亮屏"));
+}
+
+bool DeviceVM::openSystemSettings(const QString &key)
+{
+    const bool ok = Platform::openSystemSettings(key);
+    if (!ok)
+        emit toast(QStringLiteral("这一项在本机没有可跳转的设置页"));
+    return ok;
 }
 
 void DeviceVM::requestFullScreenPermission()

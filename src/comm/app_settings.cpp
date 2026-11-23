@@ -13,10 +13,27 @@ constexpr auto kRole = "net/role";
 constexpr auto kVoice = "voice/enabled";
 constexpr auto kNightQuiet = "voice/nightQuiet";
 constexpr auto kLastSync = "sync/lastSyncTs";
+constexpr auto kStateSeq = "sync/stateSeq";
+constexpr auto kPlansSeq = "sync/plansSeq";
 
-// 与 DeviceVM 里的默认值保持一致：语音开、夜间安静开。
-constexpr auto kDefaultServerUrl = "https://api.yiban.example/v1";
+// CareMate 云端默认地址（组内部署），设置页可改。
+constexpr auto kDefaultServerUrl = "http://101.245.109.50:8000/v1";
 } // namespace
+
+QString normalizeServerUrl(const QString &url)
+{
+    QString trimmed = url.trimmed();
+    if (!trimmed.startsWith(QStringLiteral("https://"))
+        && !trimmed.startsWith(QStringLiteral("http://")))
+        return QString();
+    if (trimmed.length() < 12 || trimmed.length() > 200)
+        return QString();
+    while (trimmed.endsWith(QLatin1Char('/')))
+        trimmed.chop(1);
+    if (!trimmed.endsWith(QStringLiteral("/v1")))
+        trimmed += QStringLiteral("/v1");
+    return trimmed;
+}
 
 AppSettings *AppSettings::instance()
 {
@@ -128,6 +145,28 @@ qint64 AppSettings::lastSyncTs() const
 void AppSettings::setLastSyncTs(qint64 ts)
 {
     write(kLastSync, ts);
+}
+
+qint64 AppSettings::stateSeq() const
+{
+    const QSettings s;
+    return s.value(kStateSeq, 0).toLongLong();
+}
+
+void AppSettings::setStateSeq(qint64 seq)
+{
+    write(kStateSeq, seq);
+}
+
+qint64 AppSettings::plansSeq() const
+{
+    const QSettings s;
+    return s.value(kPlansSeq, 0).toLongLong();
+}
+
+void AppSettings::setPlansSeq(qint64 seq)
+{
+    write(kPlansSeq, seq);
 }
 
 void AppSettings::reset()

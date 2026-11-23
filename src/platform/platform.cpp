@@ -1,5 +1,7 @@
 #include "platform.h"
 
+#include <QVariantMap>
+
 #ifdef Q_OS_ANDROID
 #include <QCoreApplication>
 #include <QJniObject>
@@ -118,6 +120,100 @@ QStringList grantedLabels()
     // 桌面没有权限模型：按 demo 口径全给，QML 不需要分支。
     return {QStringLiteral("通知"), QStringLiteral("麦克风"), QStringLiteral("电话")};
 #endif
+}
+
+bool isIgnoringBatteryOptimizations()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(
+        kBridge, "isIgnoringBatteryOptimizations", "(Landroid/content/Context;)Z",
+        context.object());
+#else
+    return true;
+#endif
+}
+
+QVariantList permissionDiagnostics()
+{
+    // F1 权限页逐项画 ✅/❌；返回 QVariantMap 列表，QML 直接当 model 用。
+    struct Item {
+        const char *key;
+        const char *label;
+        Permission permission;
+    };
+    static const Item items[] = {
+        { "notifications",    "通知",     Permission::Notifications },
+        { "exactAlarm",       "精确闹钟", Permission::ExactAlarm },
+        { "fullscreenIntent", "锁屏提醒", Permission::FullScreenIntent },
+        { "phone",            "电话",     Permission::Phone },
+        { "sms",              "短信",     Permission::Sms },
+        { "microphone",       "麦克风",   Permission::Microphone },
+    };
+
+    QVariantList out;
+    for (const Item &item : items) {
+        out.append(QVariantMap {
+            { QStringLiteral("key"), QString::fromLatin1(item.key) },
+            { QStringLiteral("label"), QString::fromUtf8(item.label) },
+#ifdef Q_OS_ANDROID
+            { QStringLiteral("granted"), hasPermission(item.permission) },
+            { QStringLiteral("canOpenSettings"), true },
+#else
+            // 桌面没有权限模型，按 demo 口径全给，也不需要设置跳转。
+            { QStringLiteral("granted"), true },
+            { QStringLiteral("canOpenSettings"), false },
+#endif
+        });
+    }
+    out.append(QVariantMap {
+        { QStringLiteral("key"), QStringLiteral("battery") },
+        { QStringLiteral("label"), QStringLiteral("电池白名单") },
+        { QStringLiteral("granted"), isIgnoringBatteryOptimizations() },
+#ifdef Q_OS_ANDROID
+        { QStringLiteral("canOpenSettings"), true },
+#else
+        { QStringLiteral("canOpenSettings"), false },
+#endif
+    });
+    return out;
+}
+
+bool openSystemSettings(const QString &key)
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    if (key == QLatin1String("notifications")) {
+        QJniObject::callStaticMethod<void>(kBridge, "openNotificationSettings",
+                                           "(Landroid/content/Context;)V", context.object());
+        return true;
+    }
+    if (key == QLatin1String("exactAlarm")) {
+        openExactAlarmSettings();
+        return true;
+    }
+    if (key == QLatin1String("fullscreenIntent")) {
+        openFullScreenIntentSettings();
+        return true;
+    }
+    if (key == QLatin1String("battery")) {
+        requestIgnoreBatteryOptimizations();
+        return true;
+    }
+    if (key == QLatin1String("phone") || key == QLatin1String("sms")
+        || key == QLatin1String("microphone")) {
+        QJniObject::callStaticMethod<void>(kBridge, "openAppDetailsSettings",
+                                           "(Landroid/content/Context;)V", context.object());
+        return true;
+    }
+#else
+    Q_UNUSED(key)
+#endif
+    return false;
 }
 
 bool canScheduleExactAlarms()
