@@ -44,6 +44,17 @@ QtObject {
         return pad2(d.getHours()) + ":" + pad2(d.getMinutes())
     }
 
+    // 操作日志用：今天的只写 "HH:mm:ss"，更早的前面带上 "M月d日"。
+    function logTime(ts) {
+        if (!ts)
+            return ""
+        var d = new Date(Number(ts))
+        var clock = pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds())
+        var sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+            && d.getDate() === now.getDate()
+        return sameDay ? clock : (d.getMonth() + 1) + "月" + d.getDate() + "日 " + clock
+    }
+
     function hhmmFromMinutes(minutes) {
         var m = ((Math.floor(minutes) % 1440) + 1440) % 1440
         return pad2(Math.floor(m / 60)) + ":" + pad2(m % 60)

@@ -52,6 +52,14 @@ public:
     // 按 occurrenceId 合并服务端状态；本地已终态（confirmed/escalated）不被回退。
     void applyServerOccurrences(const QVariantList &serverOccurrences);
 
+    // ---- 操作日志（管理后台查看；和上面的同步事件队列是两回事）----
+    // 每项 {seq, ts, category, text}，新的在前。只留最近 kMaxOperationLog 条，
+    // 不分真实/演示数据域：切换数据域本身也是一条操作。
+    QVariantList operationLog() const;
+    int operationLogSize() const { return m_opLog.size(); }
+    void logOperation(const QString &category, const QString &text);
+    void clearOperationLog();
+
     int todayDone() const;
     int todayTotal() const;
     int pendingCount() const;
@@ -102,6 +110,10 @@ public:
 
     void resetDemo();
 
+    // 清空本地数据库并回到"新装"状态：真实域清空，演示域重建。
+    // 给单测隔离用，也可作为管理后台"清除本机数据"的落点。
+    void resetStorage();
+
 signals:
     void occurrencesChanged();
     void currentChanged();
@@ -112,6 +124,7 @@ signals:
     void nowChanged();
     void reminderDue(const QVariantMap &occurrence);
     void demoModeChanged();
+    void operationLogChanged();
     void toast(const QString &text);
     // 事件日志变化（新事件入队 / 事件被 ack）：SyncVM 据此触发上传
     void eventsChanged();
@@ -154,6 +167,19 @@ private:
     void fireDue(qint64 occurrenceId);
     void appendEvent(qint64 occurrenceId, const QString &action, const QString &reason);
 
+    // ---- 本地持久化（SQLite）----
+    // 只落真实数据域的整份快照；演示域仍是内存快照（重启即重置，符合 README 的约定）。
+    void openDatabase();
+    void ensureSchema();
+    void schedulePersist();                 // 合并同一轮事件循环里的多次写入
+    void persistNow();
+    void clearDatabase();
+    bool loadRealData(DataSnapshot *data);
+
+    bool m_dbReady = false;
+    bool m_persistPending = false;
+    QString m_dbPath;
+
     int indexOfOccurrence(qint64 id) const;
     int indexOfPlan(qint64 id) const;
     QVariantMap occurrenceById(qint64 id) const;
@@ -167,6 +193,8 @@ private:
     QVariantList m_occurrences;
     QVariantList m_records;
     QVariantList m_events;
+    QVariantList m_opLog; // 旧的在前；对外输出时倒过来
+    qint64 m_nextOpSeq = 1;
 
     QTimer m_tick;
     QDate m_day;

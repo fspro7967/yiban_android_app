@@ -172,10 +172,16 @@ void SyncVM::retrySync()
 {
     if (!AppSettings::instance()->paired()
         || AppSettings::instance()->token().trimmed().isEmpty()) {
+        AppCore::instance()->logOperation(
+            QStringLiteral("管理"),
+            QStringLiteral("手动同步：没有服务器令牌，%1 条记录待上传").arg(pendingCount()));
         emit commandRejected(QStringLiteral("offline"),
                              QStringLiteral("还没有服务器令牌，请先配对或粘贴令牌"));
         return;
     }
+    AppCore::instance()->logOperation(
+        QStringLiteral("管理"),
+        QStringLiteral("手动同步：%1 条记录待上传").arg(pendingCount()));
     m_failed = false;
     emit syncChanged();
     cycle();

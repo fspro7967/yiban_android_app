@@ -45,6 +45,8 @@ ApplicationWindow {
             target = caregiverGateComponent
         else if (pageName === "admin")
             target = adminComponent
+        else if (pageName === "permissions")
+            target = permissionsComponent
         if (!target)
             return
         stack.push(target)
@@ -189,6 +191,15 @@ ApplicationWindow {
             onBack: window.goBack()
             onSosRequested: window.startSos()
             onAdminRequested: window.navigate("caregiverGate")
+            onPermissionsRequested: window.navigate("permissions")
+        }
+    }
+
+    Component {
+        id: permissionsComponent
+        PermissionsPage {
+            theme: window.theme
+            onBack: window.goBack()
         }
     }
 
@@ -305,6 +316,20 @@ ApplicationWindow {
 
     Connections {
         target: SyncVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: BoardVM
+
+        function onToast(text) { toast.show(text) }
+        function onCommandRejected(code, message) { toast.show(message) }
+    }
+
+    Connections {
+        target: AssistantVM
 
         function onToast(text) { toast.show(text) }
         function onCommandRejected(code, message) { toast.show(message) }

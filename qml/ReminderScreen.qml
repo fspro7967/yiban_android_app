@@ -3,7 +3,8 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// 全屏到点提醒：大时间、大药名、巨大确认键、10 分钟后备键；2 分钟未处理则通知家人。
+// 全屏到点提醒：事项名最大（要做什么比几点更重要），时间退为小一号的辅助信息；
+// 巨大确认键、10 分钟后备键；2 分钟未处理则通知家人。
 Item {
     id: screen
 
@@ -119,12 +120,18 @@ Item {
         anchors.margins: screen.theme.pageMargin
         spacing: screen.theme.gap
 
+        // 顶栏不能把页面撑宽：RowLayout 里没有 fillWidth 的子项是刚性的，两个固定宽度加起来
+        // 超过屏宽时，整列（倒计时、完成键、推迟键）都会跟着伸出屏幕右边。
+        // 所以标签和按钮都允许收窄，标签字放不下时自动缩小。
         RowLayout {
             Layout.fillWidth: true
             spacing: screen.theme.gapSmall
 
             Rectangle {
+                Layout.fillWidth: true
+                Layout.minimumWidth: screen.theme.px(60)
                 Layout.preferredWidth: chipText.implicitWidth + screen.theme.px(26)
+                Layout.maximumWidth: chipText.implicitWidth + screen.theme.px(26)
                 Layout.preferredHeight: screen.theme.px(50)
                 radius: height / 2
                 color: Qt.rgba(1, 1, 1, 0.14)
@@ -134,17 +141,26 @@ Item {
                 AppText {
                     id: chipText
                     anchors.centerIn: parent
+                    width: Math.min(implicitWidth, parent.width - screen.theme.px(26))
                     theme: screen.theme
                     role: "label"
                     color: screen.theme.reminderInk
-                    text: DeviceVM.nightQuietActive ? "到点提醒 · 夜间静音" : "到点提醒"
+                    // 两种文案一样长：夜间静音时直接换字，不加长标签，也不多占一行。
+                    text: DeviceVM.nightQuietActive ? "夜间静音" : "到点提醒"
+                    wrapMode: Text.NoWrap
+                    fontSizeMode: Text.HorizontalFit
+                    minimumPixelSize: screen.theme.px(14)
+                    horizontalAlignment: Text.AlignHCenter
                 }
             }
 
             Item { Layout.fillWidth: true }
 
             AppButton {
+                Layout.fillWidth: true
+                Layout.minimumWidth: Math.min(implicitWidth, screen.theme.px(168))
                 Layout.preferredWidth: screen.theme.px(168)
+                Layout.maximumWidth: screen.theme.px(168)
                 Layout.preferredHeight: screen.theme.touch
                 theme: screen.theme
                 text: "再听一遍"
@@ -170,8 +186,7 @@ Item {
 
                 AppText {
                     theme: screen.theme
-                    role: "display"
-                    font.pixelSize: screen.theme.px(52)
+                    role: "heading"
                     color: screen.theme.reminderAccent
                     text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
                     wrapMode: Text.NoWrap
@@ -180,8 +195,7 @@ Item {
                 AppText {
                     width: parent.width
                     theme: screen.theme
-                    role: "heading"
-                    font.pixelSize: screen.theme.px(38)
+                    role: "hero"
                     color: screen.theme.reminderInk
                     text: screen.occ ? screen.occ.title : ""
                     wrapMode: Text.WordWrap

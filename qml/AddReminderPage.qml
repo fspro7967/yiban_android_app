@@ -20,6 +20,36 @@ Item {
     readonly property int timeMinutes: Fmt.minutesOf(page.timeText)
     readonly property var quickTimes: ["07:00", "08:00", "12:00", "18:00"]
 
+    // 常用提醒模板：点一下把表单填好，老人或看护人不用打字。
+    // times 是建议时刻，取今天还没过的第一个；都过了就不动时间，由用户自己调。
+    readonly property var templates: [
+        { label: "吃药", title: "吃药", dose: "1 片", note: "饭后温水送服",
+          repeat: "每天", allowLate: false, times: ["08:00", "12:00", "18:00", "21:00"] },
+        { label: "测血压", title: "测血压", dose: "", note: "坐下休息 5 分钟再测",
+          repeat: "每天", allowLate: true, times: ["07:00", "19:00"] },
+        { label: "复诊", title: "去医院复诊", dose: "", note: "带上病历本和药盒",
+          repeat: "每月", allowLate: true, times: ["08:00", "14:00"] },
+        { label: "喝水", title: "喝水", dose: "1 杯", note: "",
+          repeat: "每天", allowLate: true, times: ["10:00", "15:00", "17:00"] }
+    ]
+    property string templateLabel: ""
+
+    function applyTemplate(t) {
+        nameField.text = t.title
+        doseField.text = t.dose
+        noteField.text = t.note
+        page.repeatKind = t.repeat
+        page.allowLate = t.allowLate
+        for (var i = 0; i < t.times.length; ++i) {
+            if (Fmt.minutesOf(t.times[i]) > Fmt.nowMinutes) {
+                page.setTime(t.times[i])
+                break
+            }
+        }
+        page.templateLabel = t.label
+        page.clearError()
+    }
+
     signal back()
     signal saved()
 
@@ -197,6 +227,62 @@ Item {
                 topPadding: page.theme.gapSmall
                 bottomPadding: page.theme.gap * 2
                 spacing: page.theme.gap
+
+                Rectangle {
+                    objectName: "templateCard"
+                    width: form.width
+                    height: templateColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: page.theme.surface
+                    border.width: 2
+                    border.color: page.theme.line
+
+                    Column {
+                        id: templateColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(12)
+                        spacing: page.theme.gapSmall
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "body"
+                            text: "常用提醒"
+                        }
+
+                        GridLayout {
+                            width: parent.width
+                            columns: 2
+                            columnSpacing: page.theme.gapSmall
+                            rowSpacing: page.theme.gapSmall
+
+                            Repeater {
+                                model: page.templates
+
+                                delegate: AppButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: page.theme.touch
+                                    theme: page.theme
+                                    text: modelData.label
+                                    kind: "secondary"
+                                    selected: page.templateLabel === modelData.label
+                                    onClicked: page.applyTemplate(modelData)
+                                }
+                            }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: "点一下自动填好，下面还可以再改。"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
 
                 Field {
                     id: nameField

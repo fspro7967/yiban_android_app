@@ -15,7 +15,10 @@
 #include "sync_vm.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QUrlQuery>
 
 namespace {
@@ -106,6 +109,7 @@ private slots:
     void initTestCase(); // QSettings 组织名必须在任何读写之前设好
     void init(); // 每个用例独立设置
     void uploadEventsAndAck();
+    void ackIsPersisted();
     void sosGoesThroughAlarm();
     void rejectedEventsAreExpired();
     void topLevelConflictExpiresEvents();
@@ -206,6 +210,60 @@ void TestSync::uploadEventsAndAck()
     QVERIFY(vm->lastSyncTs() > 0);
     QVERIFY(client->posts.size() >= 1);
     QCOMPARE(client->posts.first().first, QStringLiteral("/events"));
+    delete vm;
+}
+
+void TestSync::ackIsPersisted()
+{
+    // 真实数据域才落盘（演示域是内存快照）
+    AppCore::instance()->resetStorage();
+    makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+    QCOMPARE(vm->pendingCount(), 1);
+
+    client->eventsHandler = [](const QJsonObject &body) {
+        QJsonArray accepted;
+        for (const auto &e : body.value(QLatin1String("events")).toArray()) {
+            accepted.append(QJsonObject {
+                { QLatin1String("event_id"), e.toObject().value(QLatin1String("event_id")) },
+                { QLatin1String("server_seq"), 77 },
+                { QLatin1String("applied"), true },
+            });
+        }
+        return QJsonObject {
+            { QLatin1String("accepted"), accepted },
+            { QLatin1String("rejected"), QJsonArray() },
+            { QLatin1String("next_seq"), 77 },
+        };
+    };
+    vm->retrySync();
+    flush(); // 回执
+    flush(); // schedulePersist 的 singleShot(0)
+    QCOMPARE(vm->pendingCount(), 0);
+
+    // 直接读库：ack 只改了事件的 serverSeq，也必须写进去，否则重启后会重传
+    const QString path = qEnvironmentVariable("YIBAN_APP_DB");
+    QVERIFY2(!path.isEmpty(), "YIBAN_APP_DB 未设置（见 tests/CMakeLists.txt）");
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                    QStringLiteral("tst_sync_probe"));
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(QStringLiteral("SELECT synced, json FROM events")));
+        int rows = 0;
+        while (query.next()) {
+            ++rows;
+            QCOMPARE(query.value(0).toInt(), 1);
+            const QJsonObject event =
+                QJsonDocument::fromJson(query.value(1).toString().toUtf8()).object();
+            QCOMPARE(event.value(QLatin1String("serverSeq")).toInteger(), 77);
+        }
+        QCOMPARE(rows, 1);
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("tst_sync_probe"));
     delete vm;
 }
 

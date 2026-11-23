@@ -8,6 +8,7 @@
 #include <QtGlobal>
 #include <QtQml/qqmlregistration.h>
 
+class ConnectionProbe;
 class QTextToSpeech;
 class QTimer;
 class HttpClient;
@@ -39,7 +40,12 @@ class DeviceVM : public QObject
     // 夜间安静此刻是否生效（开关打开且处于 22:00–07:00），设置页和提醒页据此提示。
     Q_PROPERTY(bool nightQuietActive READ nightQuietNow NOTIFY voiceChanged)
     Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY networkChanged)
-    Q_PROPERTY(QString wifiName READ wifiName NOTIFY networkChanged)
+    // 手机当前的联网状态，读自系统（QNetworkInformation），不是服务器是否可达——那个看 testConnection。
+    //   networkStatus: online（能上外网）/ limited（连着网但只到局域网）/ portal（要网页登录的 Wi-Fi）
+    //                  / offline（没联网）/ unknown（这台设备读不到）
+    //   networkType:   Wi-Fi / 移动数据 / 有线网络 / 蓝牙，读不到为空串
+    Q_PROPERTY(QString networkStatus READ networkStatus NOTIFY networkChanged)
+    Q_PROPERTY(QString networkType READ networkType NOTIFY networkChanged)
     Q_PROPERTY(bool networkOnline READ networkOnline NOTIFY networkChanged)
     // 是否已经拿到令牌（配对成功或手工粘贴）；管理页据此提示要不要重新配对。
     Q_PROPERTY(bool hasToken READ hasToken NOTIFY tokenChanged)
@@ -47,6 +53,7 @@ class DeviceVM : public QObject
     // 管理页直接绑定它就能看到"发出去了没有、重试了几次、耗了多久"。
     Q_PROPERTY(QStringList networkLog READ networkLog NOTIFY networkLogChanged)
     Q_PROPERTY(bool demoMode READ demoMode WRITE setDemoMode NOTIFY demoModeChanged)
+    Q_PROPERTY(bool testingConnection READ testingConnection NOTIFY testingConnectionChanged)
 
 public:
     explicit DeviceVM(QObject *parent = nullptr);
@@ -65,8 +72,9 @@ public:
     bool nightQuietNow() const;
 
     QString serverUrl() const { return m_serverUrl; }
-    QString wifiName() const { return m_wifiName; }
-    bool networkOnline() const { return m_networkOnline; }
+    QString networkStatus() const;
+    QString networkType() const;
+    bool networkOnline() const { return networkStatus() == QStringLiteral("online"); }
     bool hasToken() const { return m_hasToken; }
     QStringList networkLog() const { return m_networkLog; }
     bool demoMode() const;
@@ -77,9 +85,11 @@ public:
     // 管理后台：手工填入服务端签发的令牌。配对码失效时的兜底通道。
     // 传空串表示清除令牌（同时解除配对）。
     Q_INVOKABLE bool saveToken(const QString &token);
-    // 管理后台：真实探测 /v1/state，结果用 connectionTested 回给页面。
-    // 假连接一旦点下去就报"正常"，联调时根本分不清是没发出去还是服务器拒了。
-    Q_INVOKABLE void testConnection();
+    // 管理后台：对这个地址真发一次请求看能不能连上（不要求先保存）。
+    // 测的是已保存的地址且有令牌时，连通后再带令牌请求 /v1/state，确认令牌有效、能收到数据。
+    // 异步，结果走 connectionTested；地址不合法时也从 connectionTested 回来。
+    Q_INVOKABLE void testConnection(const QString &serverUrl);
+    bool testingConnection() const;
     // 管理后台：清空网络日志（发一版对比日志之前先清一次，看起来干净）
     Q_INVOKABLE void clearNetworkLog();
 
@@ -114,14 +124,16 @@ signals:
     // 连接自检结果：ok + 面向管理员的中文结论（含具体失败原因）。
     void connectionTested(bool ok, const QString &message);
     void demoModeChanged();
+    void testingConnectionChanged();
     void sosTriggered(int level);
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
 
 private:
-    void tick();                 // 2s：夜间窗口 / 权限 / 联网状态
+    void tick();                 // 2s：夜间窗口 / 权限 / 网络日志
     void refreshPermissions();
-    void refreshNetwork();
+    void refreshToken();         // SyncVM 遇 401 会直接清令牌，这里跟着刷新 hasToken
+    void finishTest(bool ok, const QString &message);
     void rescheduleAlarms();     // 按今天的 occurrence 重排精确闹钟
     void onReminderDue(const QVariantMap &occurrence);
     void handlePairReply(quint64 requestId, int status, const QJsonObject &body);
@@ -143,6 +155,8 @@ private:
     quint64 m_testRequestId = 0;
     bool m_hasToken = false;
 
+    ConnectionProbe *m_probe = nullptr;
+    QString m_probeUrl;
     bool m_quietActive = false;
     bool m_paired = false;
     bool m_pairing = false;
@@ -154,6 +168,5 @@ private:
     bool m_speaking = false;
     QString m_role = QStringLiteral("elder");
     QString m_serverUrl = QStringLiteral("http://101.245.109.50:8000/v1");
-    QString m_wifiName = QStringLiteral("Home-2.4G");
-    bool m_networkOnline = true;
+    bool m_networkInfoReady = false; // 系统联网状态后端是否加载成功
 };

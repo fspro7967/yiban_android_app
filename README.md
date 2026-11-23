@@ -21,8 +21,8 @@ PlanVM / RecordVM / SyncVM / DeviceVM / ProfileVM）的方法、只读它们的�
 | 统计 | 近 7 天 / 近 30 天；完成率、连续天数、漏做次数、Canvas 柱状图、语音播报总结 |
 | 设置 | 三档字号、语音播报、夜间安静、演示模式开关、家人电话、配对状态、看护人后台入口、演示工具 |
 | 看护人验证 | 必须照抄“我是看护人”五个字；60 秒未完成自动回主界面；上下两个退出键 |
-| 管理后台 | 修改紧急联系人、服务器地址、查看同步状态；仅验证成功后进入 |
-| 全屏提醒 | 深锈红渐变、大时间、药名/剂量/备注、2 分钟后通知家人、112dp 确认按钮、稍后 10 分钟、再听一遍 |
+| 管理后台 | 修改紧急联系人、服务器地址、查看同步状态和操作日志；仅验证成功后进入 |
+| 全屏提醒 | 深锈红渐变、大号事项名、时间/剂量/备注、2 分钟后通知家人、112dp 确认按钮、稍后 10 分钟、再听一遍 |
 | 紧急呼救 | 首页长按 3 秒 → 5 秒倒计时可取消 → 已通知家人 |
 
 ## 演示模式
@@ -69,8 +69,9 @@ cmake --build build-desktop -j6
 ```bash
 cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH=/opt/Qt/6.11.1/gcc_64 -DBUILD_TESTING=ON
-cmake --build build-verify --target tst_app_core -j6
+cmake --build build-verify --target tst_app_core tst_connection_probe -j6
 QT_QPA_PLATFORM=offscreen ./build-verify/tests/tst_app_core
+QT_QPA_PLATFORM=offscreen ./build-verify/tests/tst_connection_probe
 ```
 
 Android APK（Qt 6.11.1 Android arm64 kit，需 SDK/NDK 与 JDK）：
@@ -121,7 +122,7 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 
 | 语义 | 基准 px（100%） | 默认实际 px（115%） |
 | --- | ---: | ---: |
-| display（提醒时间） | 68 | 78 |
+| display（大数字） | 68 | 78 |
 | hero（统计数字） | 46 | 53 |
 | title | 38 | 44 |
 | heading（卡片标题） | 30 | 35 |
@@ -167,7 +168,7 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 ### 4. 事件提醒醒目
 
 - 全屏深锈红渐变 + 呼吸琥珀描边，和日常米白界面形成强反差。
-- 默认 115% 下约 60px 大时间、44px 药名，剂量/备注分层；主按钮白底深字，112dp 高。
+- 默认 115% 下约 53px 事项名（最大）、35px 时间，剂量/备注分层；主按钮白底深字，112dp 高。
 - 打开时语音播报（`QtTextToSpeech`，中文），可点“再听一遍”。
 - 2 分钟未处理，自动 toast 并标记“已通知家人”；底部显示剩余推迟次数。
 - 提醒数据到点由 `AppCore` 每秒检查（时间源可换成服务端偏移），真实接入后改为推送 + 轮询兜底。
@@ -196,7 +197,9 @@ qml/
   StatsPage.qml         7/30 天统计
   SettingsPage.qml      设置与演示工具
   CaregiverGatePage.qml 看护人验证缓冲页（60 秒超时）
-  AdminPage.qml         看护人管理后台（联系人、网络、同步）
+  AdminPage.qml         看护人管理后台（联系人、网络、同步、外设板、AI 助手、操作日志）
+  BoardCard.qml         管理后台的“外设板”卡片：蓝牙扫描 / 绑定 / 看链路通不通
+  AssistantCard.qml     管理后台的“AI 助手”卡片：接入方式、地址与模型、试发一句
   ReminderScreen.qml    全屏到点提醒
   CallScreen.qml        呼救倒计时
   SosButton.qml         长按 3 秒 SOS
@@ -209,12 +212,27 @@ src/vm/
   sync_vm.*             SyncVM：syncState/lastSyncTs/pendingCount/retrySync
   device_vm.*           DeviceVM：pair/speak/sos/enterKiosk/TTS
   profile_vm.*          ProfileVM：老人与家人档案
+  log_vm.*              LogVM：操作日志 entries/count/note/clear（管理后台用）
+  board_vm.*            BoardVM：外设板（雷达 + 灯板 + 确认键）的扫描/绑定/连接状态，给管理后台看
+  assistant_vm.*        AssistantVM：大模型接入配置 + ask/replyReady（云端 API 或 Ollama）
   app_core.*            端上数据核心（demo 内存实现，B1 换 SQLite + 状态机）
   facade_errors.h       错误码 → 中文文案
 src/comm/
   http_client.*         唯一 HTTP 落点（当前只有离线实现，B2 补真实客户端）
+  connection_probe.*    管理后台“测试连接”：对服务器地址真发一次请求
+  device_link.*         到外设板的链路抽象：send/received/isUp，一行一条 JSON 的编码与拼行
+  ble_link.*            DeviceLink 的 BLE 实现：串口透传服务、主机心跳、绑定与自动重连
+include/ + src/
+  devicehandler.*       BLE 底层：扫描、连接、GATT、按 MTU 分包（由 ble_link 使用）
+  msgsender.*           大模型请求：OpenAI 兼容 API / Ollama，配置存 QSettings（由 AssistantVM 使用）
+                        两个都是从旧项目带过来的，QML 不直接碰；devicehandler 里的音频流控和
+                        BoardProtocol 是旧项目音频板的东西，本项目的外设板不负责音频，用不到
 tests/
-  tst_app_core.cpp      facade 契约单测（15 例）
+  tst_app_core.cpp      facade 契约单测（24 例）
+  tst_connection_probe.cpp  测试连接的探测逻辑（本机假服务器，不需要外网）
+  tst_device_link.cpp   外设板链路的分行与解析（拆包、粘包、脏行、超长行）
+tools/
+  fake_board.py         假外设板：用 Linux 电脑的蓝牙冒充外设板，固件没写出来前联调 BLE 链路
 docs/
   端上接口规范_v1.1.md   ★ 冻结的接口/形状/状态机/错误码
   后端交接清单.md       给 B1/B2 的逐文件落点与顺序
@@ -264,6 +282,11 @@ qml 页面 ──调用──▶ ReminderVM / PlanVM / RecordVM / SyncVM / Devic
   （`src/comm/app_settings.cpp`），重启后保持；字号档位仍只在内存里，属 QML 侧状态。
   管理后台改的紧急联系人仍只改内存，等后端 profile 接口。
 - 语音依赖设备 TTS 引擎；`AndroidManifest.xml` 已加 Android 11+ 的 `TTS_SERVICE` 查询声明。
+- 外设板（雷达 + 灯板 + 确认键，不负责音频）目前只接通了 BLE 链路：扫描、绑定、自动重连、
+  一行一条 JSON 的收发和主机心跳。**业务还没接**：提醒状态没有推给灯板，按键确认和雷达事件
+  收到了也只是显示在管理后台，不会改提醒状态（`TerminalBridge` 待写）。App 退到后台或息屏时
+  Qt 会暂停事件循环，心跳停发，要常驻得等前台服务。蓝牙权限由 Qt Bluetooth 模块在打包时自动写进 Manifest。
+- 大模型问答（`AssistantVM`）只能在管理后台试发，还没有接语音输入和朗读。
 - 新建页面向老人只暴露“每天 / 每周 / 每月 / 仅一次”四种常用重复（对应规则 JSON 见规范 §6）；
   interval / course / meal_offset 不进端上，更适合放到照护者端或后续“高级选项”。
 - 应用为竖屏锁定；若后续要做平板/横屏，需要重新排 2×2 入口与统计图。

@@ -71,3 +71,4 @@ __pycache__/
 
 # 只忽略解压目录；zip 产物直接提交进仓库
 /release/yiban-desktop/
+caremate_hardware

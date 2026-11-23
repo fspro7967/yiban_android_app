@@ -1,6 +1,7 @@
 #include "device_vm.h"
 
 #include "app_core.h"
+#include "connection_probe.h"
 #include "app_settings.h"
 #include "facade_errors.h"
 #include "http_client.h"
@@ -10,6 +11,7 @@
 #endif
 
 #include <QDateTime>
+#include <QNetworkInformation>
 #include <QDebug>
 #include <QJsonArray>
 #include <QLocale>
@@ -17,6 +19,7 @@
 #include <QTextToSpeech>
 #include <QTime>
 #include <QTimer>
+#include <QUrl>
 #include <QUrlQuery>
 
 namespace {
@@ -51,8 +54,6 @@ DeviceVM::DeviceVM(QObject *parent)
     m_role = settings->role();
     m_serverUrl = settings->serverUrl();
     m_hasToken = !settings->token().trimmed().isEmpty();
-    m_wifiName = Platform::isAndroid() ? QStringLiteral("无线网络")
-                                       : QStringLiteral("Home-2.4G");
 
     m_http = new NetworkHttpClient(this);
     connect(m_http, &HttpClient::reply, this,
@@ -106,6 +107,19 @@ DeviceVM::DeviceVM(QObject *parent)
 
     m_permissionCache = Platform::grantedLabels();
     m_permissionDiagnostics = Platform::permissionDiagnostics();
+    // 联网状态直接听系统的：Android 上是 ConnectivityManager，桌面是 NetworkManager。
+    // 后端加载不了（极少数定制系统、无 NetworkManager 的桌面）时保持 unknown，不假装在线。
+    m_networkInfoReady = QNetworkInformation::loadBackendByFeatures(
+                             QNetworkInformation::Feature::Reachability)
+                         || QNetworkInformation::loadDefaultBackend();
+    if (QNetworkInformation *info = m_networkInfoReady ? QNetworkInformation::instance() : nullptr) {
+        connect(info, &QNetworkInformation::reachabilityChanged, this, &DeviceVM::networkChanged);
+        connect(info, &QNetworkInformation::transportMediumChanged, this, &DeviceVM::networkChanged);
+        connect(info, &QNetworkInformation::isBehindCaptivePortalChanged,
+                this, &DeviceVM::networkChanged);
+    }
+
+    // 进出安静时段时要通知界面，并打断正在进行的播报。
     m_quietActive = nightQuietNow();
 
     m_tickTimer = new QTimer(this);
@@ -154,7 +168,8 @@ void DeviceVM::tick()
         emit voiceChanged();
     }
     refreshPermissions();
-    refreshNetwork();
+    refreshToken();
+    // 联网状态不用轮询：QNetworkInformation 的信号直接接到 networkChanged（见构造函数）
 
     // 网络日志：2 秒同步一次就够看，管理页打开时不会漏掉任何一次交换
     const QStringList log = NetworkLog::recent();
@@ -175,20 +190,13 @@ void DeviceVM::refreshPermissions()
     emit permissionChanged();
 }
 
-void DeviceVM::refreshNetwork()
+void DeviceVM::refreshToken()
 {
-    // 令牌可能被 SyncVM 在 401 时直接清掉，这里跟着刷新 UI 上的"已配置令牌"。
     const bool hasToken = !AppSettings::instance()->token().trimmed().isEmpty();
-    if (hasToken != m_hasToken) {
-        m_hasToken = hasToken;
-        emit tokenChanged();
-    }
-
-    const bool online = m_http && m_http->isOnline();
-    if (online == m_networkOnline)
+    if (hasToken == m_hasToken)
         return;
-    m_networkOnline = online;
-    emit networkChanged();
+    m_hasToken = hasToken;
+    emit tokenChanged();
 }
 
 // ---------------------------------------------------------------- 属性
@@ -227,6 +235,8 @@ void DeviceVM::setVoiceEnabled(bool on)
     AppSettings::instance()->setVoiceEnabled(on);
     if (!on)
         stopSpeaking();
+    AppCore::instance()->logOperation(QStringLiteral("设置"),
+                                      on ? QStringLiteral("打开语音播报") : QStringLiteral("关闭语音播报"));
     emit voiceChanged();
     // 已经排进系统的闹钟还带着旧的"要不要播报"标记，重排一遍才生效
     QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
@@ -241,6 +251,8 @@ void DeviceVM::setNightQuiet(bool on)
     m_quietActive = nightQuietNow();
     if (m_quietActive)
         stopSpeaking();
+    AppCore::instance()->logOperation(QStringLiteral("设置"),
+                                      on ? QStringLiteral("打开夜间安静") : QStringLiteral("关闭夜间安静"));
     emit voiceChanged();
     // 夜间安静的"只亮屏"标记要写进每条闹钟里，开关一变就必须重排
     QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
@@ -265,6 +277,45 @@ void DeviceVM::setDemoMode(bool on)
     QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
 }
 
+QString DeviceVM::networkStatus() const
+{
+    const QNetworkInformation *info = m_networkInfoReady ? QNetworkInformation::instance() : nullptr;
+    if (!info)
+        return QStringLiteral("unknown");
+    switch (info->reachability()) {
+    case QNetworkInformation::Reachability::Online:
+        return info->isBehindCaptivePortal() ? QStringLiteral("portal") : QStringLiteral("online");
+    case QNetworkInformation::Reachability::Site:
+    case QNetworkInformation::Reachability::Local:
+        return info->isBehindCaptivePortal() ? QStringLiteral("portal") : QStringLiteral("limited");
+    case QNetworkInformation::Reachability::Disconnected:
+        return QStringLiteral("offline");
+    case QNetworkInformation::Reachability::Unknown:
+        break;
+    }
+    return QStringLiteral("unknown");
+}
+
+QString DeviceVM::networkType() const
+{
+    const QNetworkInformation *info = m_networkInfoReady ? QNetworkInformation::instance() : nullptr;
+    if (!info || !info->supports(QNetworkInformation::Feature::TransportMedium))
+        return QString();
+    switch (info->transportMedium()) {
+    case QNetworkInformation::TransportMedium::WiFi:
+        return QStringLiteral("Wi-Fi");
+    case QNetworkInformation::TransportMedium::Cellular:
+        return QStringLiteral("移动数据");
+    case QNetworkInformation::TransportMedium::Ethernet:
+        return QStringLiteral("有线网络");
+    case QNetworkInformation::TransportMedium::Bluetooth:
+        return QStringLiteral("蓝牙");
+    case QNetworkInformation::TransportMedium::Unknown:
+        break;
+    }
+    return QString();
+}
+
 bool DeviceVM::saveNetwork(const QString &serverUrl)
 {
     const QString trimmed = normalizeServerUrl(serverUrl);
@@ -275,8 +326,9 @@ bool DeviceVM::saveNetwork(const QString &serverUrl)
     }
 
     m_serverUrl = trimmed;
+    AppCore::instance()->logOperation(QStringLiteral("管理"),
+                                      QStringLiteral("保存服务器地址：%1").arg(trimmed));
     AppSettings::instance()->setServerUrl(trimmed);
-    m_networkOnline = m_http && m_http->isOnline();
     emit networkChanged();
     emit toast(QStringLiteral("服务器地址已保存：") + trimmed);
     return true;
@@ -314,25 +366,57 @@ bool DeviceVM::saveToken(const QString &token)
     return true;
 }
 
-void DeviceVM::testConnection()
+bool DeviceVM::testingConnection() const
 {
-    if (m_testRequestId != 0) {
-        emit connectionTested(false, QStringLiteral("上一次自检还没回来，请稍等"));
+    return (m_probe && m_probe->busy()) || m_testRequestId != 0;
+}
+
+void DeviceVM::finishTest(bool ok, const QString &message)
+{
+    AppCore::instance()->logOperation(
+        QStringLiteral("管理"), QStringLiteral("测试连接 %1：%2").arg(m_probeUrl, message));
+    emit connectionTested(ok, message);
+}
+
+void DeviceVM::testConnection(const QString &serverUrl)
+{
+    if (testingConnection())
         return;
-    }
-    if (!m_http || !m_http->isOnline()) {
-        emit connectionTested(false, QStringLiteral("设备离线：先连 Wi-Fi 或手机网络"));
-        return;
-    }
-    if (!m_hasToken || AppSettings::instance()->token().trimmed().isEmpty()) {
+
+    const QString trimmed = serverUrl.trimmed();
+    const QUrl url(trimmed, QUrl::StrictMode);
+    if (!url.isValid() || url.host().isEmpty()
+        || (url.scheme() != QStringLiteral("https") && url.scheme() != QStringLiteral("http"))) {
         emit connectionTested(false,
-                              QStringLiteral("没有令牌：请用 6 位配对码配对，或粘贴服务器签发的 ses- 令牌"));
+                              QStringLiteral("服务器地址要以 http:// 或 https:// 开头，后面跟上域名或 IP"));
         return;
     }
 
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("since"), QStringLiteral("0"));
-    m_testRequestId = m_http->getJson(QStringLiteral("/state"), query);
+    if (!m_probe) {
+        m_probe = new ConnectionProbe(this);
+        connect(m_probe, &ConnectionProbe::busyChanged, this, &DeviceVM::testingConnectionChanged);
+        connect(m_probe, &ConnectionProbe::finished, this,
+                [this](bool reachable, int, int elapsedMs, const QString &, const QString &message) {
+            if (!reachable) {
+                finishTest(false, message);
+                return;
+            }
+            // 第二步：测的就是同步用的地址、手上又有令牌，就带令牌拉一次 /state。
+            // 只探连通的话，令牌过期也会报"连接正常"，联调时分不清是没发出去还是被拒了。
+            if (m_http && m_hasToken && normalizeServerUrl(m_probeUrl) == m_serverUrl) {
+                QUrlQuery query;
+                query.addQueryItem(QStringLiteral("since"), QStringLiteral("0"));
+                m_testRequestId = m_http->getJson(QStringLiteral("/state"), query);
+                if (m_testRequestId != 0) {
+                    emit testingConnectionChanged();
+                    return;
+                }
+            }
+            finishTest(true, QStringLiteral("%1，用时 %2 毫秒").arg(message).arg(elapsedMs));
+        });
+    }
+    m_probeUrl = trimmed;
+    m_probe->start(url);
 }
 
 void DeviceVM::handleTestReply(quint64 requestId, int status, const QJsonObject &body)
@@ -340,23 +424,23 @@ void DeviceVM::handleTestReply(quint64 requestId, int status, const QJsonObject 
     if (requestId != m_testRequestId)
         return;
     m_testRequestId = 0;
+    emit testingConnectionChanged();
 
     if (status >= 200 && status < 300) {
         const int count = body.value(QStringLiteral("occurrences")).toArray().size();
-        emit connectionTested(true,
-                              QStringLiteral("连接正常：服务器可达、令牌有效，下发 %1 条提醒状态")
-                                  .arg(count));
+        finishTest(true,
+                   QStringLiteral("连接正常：服务器可达、令牌有效，下发 %1 条提醒状态").arg(count));
         return;
     }
     if (status == 401) {
-        emit connectionTested(false, QStringLiteral("服务器可达，但令牌无效：请重新配对或换一个令牌"));
+        finishTest(false, QStringLiteral("服务器可达，但令牌无效：请重新配对或换一个令牌"));
         return;
     }
     const QString detail = body.value(QStringLiteral("detail")).toString();
-    emit connectionTested(false,
-                          QStringLiteral("服务器返回 %1%2")
-                              .arg(status)
-                              .arg(detail.isEmpty() ? QString() : QStringLiteral("：") + detail));
+    finishTest(false,
+               QStringLiteral("服务器可达，但同步接口返回 %1%2")
+                   .arg(status)
+                   .arg(detail.isEmpty() ? QString() : QStringLiteral("：") + detail));
 }
 
 void DeviceVM::handleTestFailed(quint64 requestId, const QString &code)
@@ -364,10 +448,11 @@ void DeviceVM::handleTestFailed(quint64 requestId, const QString &code)
     if (requestId != m_testRequestId)
         return;
     m_testRequestId = 0;
-    emit connectionTested(false,
-                          code == QStringLiteral("offline")
-                              ? QStringLiteral("连不上服务器：设备显示离线")
-                              : QStringLiteral("连不上服务器：地址/端口不对或请求超时"));
+    emit testingConnectionChanged();
+    finishTest(false,
+               code == QStringLiteral("offline")
+                   ? QStringLiteral("服务器可达，但同步请求没发出去：设备显示离线")
+                   : QStringLiteral("服务器可达，但同步请求失败：地址/端口不对或请求超时"));
 }
 
 // ---------------------------------------------------------------- 配对
@@ -494,6 +579,7 @@ void DeviceVM::finishPair(bool ok, const QString &role, const QString &reason)
     if (!role.isEmpty())
         m_role = role;
     AppSettings::instance()->setPairing(true, m_role);
+    AppCore::instance()->logOperation(QStringLiteral("设置"), QStringLiteral("完成配对"));
     emit pairingChanged();
 
     const QString name = AppCore::instance()->caregiverName();
@@ -526,6 +612,7 @@ void DeviceVM::unpair()
     if (!m_paired)
         return;
     m_paired = false;
+    AppCore::instance()->logOperation(QStringLiteral("设置"), QStringLiteral("取消配对"));
     m_role = QStringLiteral("elder");
     AppSettings::instance()->setPairing(false, m_role);
     AppSettings::instance()->clearToken();
@@ -644,6 +731,7 @@ void DeviceVM::enterKiosk()
     if (m_kioskActive)
         return;
     m_kioskActive = true;
+    AppCore::instance()->logOperation(QStringLiteral("设置"), QStringLiteral("进入老人机模式"));
     Platform::enterKiosk();
     emit kioskChanged();
 }
@@ -653,6 +741,7 @@ void DeviceVM::exitKiosk()
     if (!m_kioskActive)
         return;
     m_kioskActive = false;
+    AppCore::instance()->logOperation(QStringLiteral("设置"), QStringLiteral("退出老人机模式"));
     Platform::exitKiosk();
     emit kioskChanged();
 }

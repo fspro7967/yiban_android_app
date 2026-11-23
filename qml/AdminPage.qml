@@ -1,9 +1,10 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 
-// 看护人管理后台：紧急联系人、服务器地址、同步状态。
+// 看护人管理后台：紧急联系人、服务器地址、同步状态、外设板、AI 助手、操作日志。
 // 只能从 CaregiverGatePage 验证成功后进入。
 Item {
     id: page
@@ -15,21 +16,23 @@ Item {
 
     property string contactError: ""
     property string networkError: ""
-    property bool connectionOk: false
-
-    // 连接自检结果直接写在这里，管理员不用翻 logcat 才知道发出去没有。
-    Connections {
-        target: DeviceVM
-        function onConnectionTested(ok, message) {
-            page.connectionOk = ok
-            page.networkError = message
-            Notify.info(message)
-        }
-    }
+    // networkError 只放"保存网络设置"的结论；测试连接的结论走下面的 probeText。
+    property bool networkSaved: false
+    // 测试连接的结果只属于当前填的这个地址：地址一改就清掉，避免拿旧结论对新地址。
+    property string probeText: ""
+    property bool probeOk: false
     // 电话格式问题：边输边查，但只在用户点过保存或输入框失焦后才标红，避免一敲就报错。
     property bool phoneTouched: false
     readonly property string phoneProblem: ProfileVM.phoneProblem(contactPhone.text)
     readonly property bool nameMissing: contactName.text.trim().length === 0
+
+    // 操作日志一次只画最近的 logPageSize 条，点"查看更早的"再往下加，避免一页画几百行。
+    readonly property int logPageSize: 20
+    property int logShown: logPageSize
+
+    // 进出后台都留痕。退出用 StackView 的移除通知：页头返回、底部按钮、系统返回键都会走到。
+    Component.onCompleted: LogVM.note("管理", "进入管理后台")
+    StackView.onRemoved: LogVM.note("管理", "退出管理后台")
 
     function saveContact() {
         const name = contactName.text.trim()
@@ -60,18 +63,29 @@ Item {
 
     function saveNetwork() {
         if (!DeviceVM.saveNetwork(serverUrl.text)) {
+            page.networkSaved = false
             page.networkError = "服务器地址要以 http:// 或 https:// 开头"
             return
         }
         if (serverToken.text.trim().length > 0) {
             if (!DeviceVM.saveToken(serverToken.text)) {
+                page.networkSaved = false
                 page.networkError = "令牌格式不对，请复制完整的 ses-… 令牌"
                 return
             }
             serverToken.text = ""
         }
+        page.networkSaved = true
         page.networkError = "已保存。配对码失效时可粘贴服务器签发的令牌。"
-        page.connectionOk = false
+    }
+
+    Connections {
+        target: DeviceVM
+
+        function onConnectionTested(ok, message) {
+            page.probeOk = ok
+            page.probeText = message
+        }
     }
 
     ColumnLayout {
@@ -247,28 +261,46 @@ Item {
                         y: page.theme.px(12)
                         spacing: page.theme.gapSmall
 
+                        // 手机自己的联网状态（系统给的），和下面"测试连接"查的服务器是否可达是两件事。
                         RowLayout {
                             width: parent.width
+                            spacing: page.theme.gapSmall
 
                             AppText {
                                 theme: page.theme
                                 role: "body"
-                                text: "Wi-Fi"
+                                text: "手机联网"
                             }
 
-                            Item { Layout.fillWidth: true }
-
                             AppText {
+                                objectName: "networkState"
+                                Layout.fillWidth: true
                                 theme: page.theme
                                 role: "label"
-                                color: DeviceVM.networkOnline ? page.theme.primary : page.theme.danger
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.Wrap
                                 font.weight: Font.DemiBold
-                                text: DeviceVM.networkOnline ? DeviceVM.wifiName + " · 已连接" : "未连接"
+                                color: DeviceVM.networkStatus === "online" ? page.theme.primary
+                                    : DeviceVM.networkStatus === "offline" ? page.theme.danger
+                                    : DeviceVM.networkStatus === "unknown" ? page.theme.inkSoft
+                                    : page.theme.amberInk
+                                text: {
+                                    var type = DeviceVM.networkType
+                                    var prefix = type.length > 0 ? type + " · " : ""
+                                    switch (DeviceVM.networkStatus) {
+                                    case "online": return prefix + "已联网"
+                                    case "limited": return prefix + "已连接，但上不了外网"
+                                    case "portal": return prefix + "需要先在网页上登录"
+                                    case "offline": return "未联网"
+                                    default: return "读不到联网状态"
+                                    }
+                                }
                             }
                         }
 
                         Field {
                             id: serverUrl
+                            objectName: "serverUrl"
                             width: parent.width
                             theme: page.theme
                             label: "服务器地址"
@@ -277,6 +309,7 @@ Item {
                             fontSize: page.theme.px(20)
                             maxLength: 80
                             inputMethodHints: Qt.ImhUrlCharactersOnly
+                            onTextChanged: page.probeText = ""
                         }
 
                         Field {
@@ -315,21 +348,33 @@ Item {
                             visible: page.networkError.length > 0
                             theme: page.theme
                             role: "label"
-                            color: page.connectionOk ? page.theme.primary : page.theme.danger
+                            color: page.networkSaved ? page.theme.primary : page.theme.danger
                             text: page.networkError
                             wrapMode: Text.WordWrap
                         }
 
+                        AppText {
+                            objectName: "probeResult"
+                            width: parent.width
+                            visible: page.probeText.length > 0 && !DeviceVM.testingConnection
+                            theme: page.theme
+                            role: "label"
+                            color: page.probeOk ? page.theme.primary : page.theme.danger
+                            text: (page.probeOk ? "✓ " : "✗ ") + page.probeText
+                            wrapMode: Text.Wrap
+                        }
+
                         AppButton {
+                            objectName: "probeButton"
                             width: parent.width
                             height: page.theme.touch
                             theme: page.theme
-                            text: "测试连接"
+                            text: DeviceVM.testingConnection ? "正在测试…" : "测试连接"
                             kind: "secondary"
+                            enabled: !DeviceVM.testingConnection
                             onClicked: {
-                                page.connectionOk = false
-                                page.networkError = "正在测试…"
-                                DeviceVM.testConnection()
+                                page.probeText = ""
+                                DeviceVM.testConnection(serverUrl.text)
                             }
                         }
 
@@ -407,6 +452,162 @@ Item {
                     }
                 }
 
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "外设板"
+                }
+
+                BoardCard {
+                    width: parent.width
+                    theme: page.theme
+                }
+
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "AI 助手"
+                }
+
+                AssistantCard {
+                    width: parent.width
+                    theme: page.theme
+                }
+
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "操作日志"
+                }
+
+                Rectangle {
+                    objectName: "logCard"
+                    width: parent.width
+                    height: logColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: page.theme.surface
+                    border.width: 2
+                    border.color: page.theme.line
+
+                    Column {
+                        id: logColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(12)
+                        spacing: page.theme.gapSmall
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "body"
+                            text: "共 " + LogVM.count + " 条，最新的在最上面"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: "提醒、计划、记录、设置的每一步都会记在这里。演示版只保存在内存里，最多 200 条，重启后清空。"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Repeater {
+                            model: LogVM.entries.slice(0, page.logShown)
+
+                            delegate: Column {
+                                id: logRow
+
+                                required property var modelData
+                                required property int index
+
+                                width: logColumn.width
+                                spacing: page.theme.px(4)
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: 2
+                                    color: page.theme.line
+                                }
+
+                                Row {
+                                    width: parent.width
+                                    topPadding: page.theme.px(6)
+                                    spacing: page.theme.gapSmall
+
+                                    Rectangle {
+                                        id: categoryChip
+                                        anchors.verticalCenter: logTimeText.verticalCenter
+                                        width: categoryText.implicitWidth + page.theme.px(16)
+                                        height: categoryText.implicitHeight + page.theme.px(6)
+                                        radius: height / 2
+                                        color: logRow.modelData.category === "呼救" ? page.theme.dangerSoft
+                                            : logRow.modelData.category === "管理" ? page.theme.amberSoft
+                                            : page.theme.primarySoft
+
+                                        AppText {
+                                            id: categoryText
+                                            anchors.centerIn: parent
+                                            theme: page.theme
+                                            font.pixelSize: page.theme.fontChip
+                                            font.weight: Font.DemiBold
+                                            color: logRow.modelData.category === "呼救" ? page.theme.dangerInk
+                                                : logRow.modelData.category === "管理" ? page.theme.amberInk
+                                                : page.theme.primaryInk
+                                            text: logRow.modelData.category
+                                        }
+                                    }
+
+                                    AppText {
+                                        id: logTimeText
+                                        theme: page.theme
+                                        role: "label"
+                                        color: page.theme.inkSoft
+                                        text: Fmt.logTime(logRow.modelData.ts)
+                                    }
+                                }
+
+                                AppText {
+                                    width: parent.width
+                                    theme: page.theme
+                                    role: "label"
+                                    text: logRow.modelData.text
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                        }
+
+                        AppButton {
+                            objectName: "logMore"
+                            width: parent.width
+                            height: page.theme.touch
+                            visible: LogVM.count > page.logShown
+                            theme: page.theme
+                            text: "查看更早的 " + Math.min(page.logPageSize, LogVM.count - page.logShown) + " 条"
+                            kind: "secondary"
+                            onClicked: page.logShown += page.logPageSize
+                        }
+
+                        AppButton {
+                            width: parent.width
+                            height: page.theme.touch
+                            // 清空后还剩一条"清空了操作日志"，这时再清没有意义。
+                            enabled: LogVM.count > 1
+                            theme: page.theme
+                            text: "清空日志"
+                            kind: "secondary"
+                            onClicked: clearLogDialog.open()
+                        }
+                    }
+                }
+
                 AppButton {
                     width: parent.width
                     height: page.theme.buttonLarge
@@ -416,6 +617,20 @@ Item {
                     onClicked: page.back()
                 }
             }
+        }
+    }
+
+    ConfirmDialog {
+        id: clearLogDialog
+        theme: page.theme
+        title: "清空操作日志"
+        message: "现有的 " + LogVM.count + " 条日志会被删掉，不能恢复。"
+        confirmText: "清空"
+        cancelText: "取消"
+        danger: true
+        onAccepted: {
+            LogVM.clear()
+            page.logShown = page.logPageSize
         }
     }
 }

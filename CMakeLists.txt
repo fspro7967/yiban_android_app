@@ -84,8 +84,9 @@ unset(_qt_toolchain_normalized)
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Quick Qml)
 
-# TextToSpeech 用于提醒/统计的语音播报；Concurrent 给离线 TTS 的后台加载。
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql Concurrent)
+# TextToSpeech 用于提醒/统计的语音播报；Bluetooth 用于 BLE 连接外设板（BleLink / DeviceHandler）；
+# Concurrent 给离线 TTS 的后台加载。
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql Bluetooth Concurrent)
 
 # sherpa-onnx（离线中文语音合成）——只编 Android；桌面构建连它的源也不编。
 # 到点播报走仓库自带模型预渲染的 WAV，见 src/alarm_tts.{h,cpp} 与组里 review 反馈。
@@ -119,6 +120,12 @@ set(VM_SOURCES
         src/vm/device_vm.cpp
         src/vm/profile_vm.h
         src/vm/profile_vm.cpp
+        src/vm/log_vm.h
+        src/vm/log_vm.cpp
+        src/vm/board_vm.h
+        src/vm/board_vm.cpp
+        src/vm/assistant_vm.h
+        src/vm/assistant_vm.cpp
         src/vm/facade_errors.h
         src/comm/app_settings.h
         src/comm/app_settings.cpp
@@ -126,6 +133,22 @@ set(VM_SOURCES
         src/comm/http_client.cpp
         src/platform/platform.h
         src/platform/platform.cpp
+        src/comm/connection_probe.h
+        src/comm/connection_probe.cpp
+        src/comm/device_link.h
+        src/comm/device_link.cpp
+        src/comm/ble_link.h
+        src/comm/ble_link.cpp
+)
+
+# 从旧项目带过来的两个底层类：DeviceHandler 是 BLE 收发（扫描/连接/GATT/分包），
+# 由 src/comm/ble_link 用来连外设板；MsgSender 是 AI 大模型请求，由 AssistantVM 包一层。
+# 两者都不直接暴露给 QML。头文件要列进来，AUTOMOC 才会处理 include/ 下的 Q_OBJECT。
+set(BOARD_SOURCES
+        include/devicehandler.h
+        src/devicehandler.cpp
+        include/msgsender.h
+        src/msgsender.cpp
 )
 
 # 离线语音链路（模型提取 → sherpa-onnx 合成 → 到点播报 WAV）只在 Android 编译：
@@ -148,6 +171,7 @@ set(PROJECT_SOURCES
         ${TS_FILES}
         src/main.cpp
         ${VM_SOURCES}
+        ${BOARD_SOURCES}
         ${SPEECH_SOURCES}
 )
 
@@ -231,11 +255,16 @@ target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::TextToSpeech
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Sql
+    Qt${QT_VERSION_MAJOR}::Bluetooth
     Qt${QT_VERSION_MAJOR}::Concurrent
 )
 
-# Android 上把 sherpa-onnx 两个 .so 塞进 APK 并链接 C API（见 sherpa-onnx.cmake）
+# Android 上 Qt 的 TLS 后端要在运行时加载 libssl_3.so / libcrypto_3.so，APK 里不带就连不了 https
+#（管理后台"测试连接"和以后的云端同步都会报 TLS initialization failed）。
+# 同时把 sherpa-onnx 两个 .so 塞进 APK 并链接 C API（见 sherpa-onnx.cmake）。
 if(ANDROID)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/third_party/android_openssl/android_openssl.cmake)
+    add_android_openssl_libraries(yiban_android_app)
     add_sherpa_onnx_libraries(yiban_android_app)
 endif()
 
