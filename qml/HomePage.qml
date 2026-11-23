@@ -44,15 +44,81 @@ Item {
             Layout.topMargin: page.theme.px(10)
             spacing: page.theme.gapSmall
 
-            AppText {
+            RowLayout {
                 Layout.fillWidth: true
-                theme: page.theme
-                role: "title"
-                text: ProfileVM.elderName.length > 0
-                    ? Fmt.greeting + "，" + ProfileVM.elderName
-                    : "你好"
-                wrapMode: Text.NoWrap
-                elide: Text.ElideRight
+                spacing: page.theme.gapSmall
+
+                AppText {
+                    id: greetingText
+                    Layout.fillWidth: true
+                    // 宽度只由布局决定，不随换行后的 implicitWidth 来回变（否则会绑定循环）
+                    Layout.preferredWidth: 1
+                    Layout.alignment: Qt.AlignVCenter
+                    theme: page.theme
+                    role: "title"
+                    // 右边让出了同步按钮：一行放不下时在「，」后换行，别把名字截断或拆开
+                    readonly property string oneLine: ProfileVM.elderName.length > 0
+                        ? Fmt.greeting + "，" + ProfileVM.elderName
+                        : "你好"
+                    text: greetingMetrics.advanceWidth <= width || ProfileVM.elderName.length === 0
+                        ? oneLine
+                        : Fmt.greeting + "，\n" + ProfileVM.elderName
+                    wrapMode: Text.NoWrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+
+                    TextMetrics {
+                        id: greetingMetrics
+                        font: greetingText.font
+                        text: greetingText.oneLine
+                    }
+                }
+
+                // 手动同步：和管理页「立即同步」同一入口；没令牌时 SyncVM 会弹 toast 说明原因。
+                // 按钮做窄，只写「同步」两字，别把问候语挤没；同步中变灰，
+                // 角标显示待上传条数，上一轮出错时角标变成琥珀色「!」。
+                AppButton {
+                    id: syncButton
+                    objectName: "homeSyncButton"
+                    Layout.alignment: Qt.AlignTop
+                    Layout.topMargin: page.theme.px(6)
+                    Layout.preferredWidth: page.theme.px(96)
+                    Layout.preferredHeight: page.theme.touch
+                    theme: page.theme
+                    kind: "secondary"
+                    enabled: SyncVM.syncState !== "syncing"
+                    text: "同步"
+                    Accessible.name: SyncVM.syncState === "syncing" ? "正在同步"
+                        : SyncVM.pendingCount > 0 ? "同步，" + SyncVM.pendingCount + " 条待上传"
+                        : "同步"
+                    onClicked: SyncVM.retrySync()
+
+                    readonly property bool failed: SyncVM.syncState === "error"
+                    readonly property bool showBadge: failed || SyncVM.pendingCount > 0
+
+                    Rectangle {
+                        visible: syncButton.showBadge
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.rightMargin: -width / 3
+                        anchors.topMargin: -height / 3
+                        height: page.theme.px(28)
+                        width: Math.max(height, badgeText.implicitWidth + page.theme.px(12))
+                        radius: height / 2
+                        color: syncButton.failed ? page.theme.amber : page.theme.primary
+
+                        Text {
+                            id: badgeText
+                            anchors.centerIn: parent
+                            color: "#FFFFFF"
+                            font.family: page.theme.fontFamily
+                            font.pixelSize: page.theme.px(18)
+                            font.weight: Font.Bold
+                            text: syncButton.failed ? "!"
+                                : SyncVM.pendingCount > 99 ? "99+" : SyncVM.pendingCount
+                        }
+                    }
+                }
             }
 
             AppText {
