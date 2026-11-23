@@ -55,6 +55,9 @@ signals:
     void nowChanged();
     void autoRemindersChanged();
     void reminderDue(const QVariantMap &occurrence);
+    // 升级链（I2）：level 0=未到点，1=已提醒，2=语音加强，3=通知家人。
+    // QML 用它替换 ReminderScreen 里写死的 120 秒计时器。
+    void escalationChanged(qint64 occurrenceId, int level);
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
 

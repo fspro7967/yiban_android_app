@@ -103,3 +103,59 @@ events(event_id TEXT PRIMARY KEY, occurrence_id INTEGER, action TEXT, ts INTEGER
 3. **热点查询下沉 SQL**：统计、按天筛选、事件分页，现在都是内存算；数据量大了再迁。
 4. **演示域是否也落盘**：现在演示域重启即重置（符合 README 的约定）；如果产品要求演示域的改动
    也保留，需要在同一套表上加 `domain` 列。
+
+---
+
+## 8. 2026-11-23 增量：同步队列、事件上限、升级链
+
+按 `agent/1118TODO.md` 里 B1 的 P0 清单做完三件，接口定义同步登记到 `agent/接口冻结清单.md` 附录 A。
+
+### 8.1 I1 同步队列（`AppCore`）
+
+签名与 B2 分支（`feat_B2_platform`，11-22）里 `SyncVM` 已经在调的保持一致：
+
+- `pendingEvents()`：只返回 `serverSeq == 0` 的事件；
+- `markEventsSynced(acked)`：`[{eventId, serverSeq}]` 回写，重复 ack 幂等；
+- `expireEvents(ids)`：服务端拒绝/409 冲突的事件置 `serverSeq = -1`，不再重传、留档可导出；
+- `eventsChanged()` 信号：新事件入队、ack、被拒都会发；`SyncVM` 触发上传，落盘层触发写库；
+- `SyncVM::pendingCount()` 改为只数 `serverSeq == 0`。
+
+⚠️ 关键坑（TODO 点名的）：`persistNow()` 是按内存整份覆盖库的，
+所以 `markEventsSynced` **必须同时改内存里的事件 map**，只 `UPDATE` 库会被下一次落盘冲掉。
+本实现改的是 `m_events`，再由 `eventsChanged → schedulePersist` 异步落库。
+
+### 8.2 事件超过 1000 条被删的问题
+
+根因：`loadRealData` 里 `LIMIT 1000` + 每次落盘整份覆盖，每重启一次就丢掉最早的事件（含未上传的）。
+
+修法：
+
+- 读回不再截断（去掉 `LIMIT 1000`，也去掉无效的 `ORDER BY dueTs`）；
+- 写库时裁剪：**待上传（`serverSeq == 0`）全留**，已处理（ack / -1）只留最近 800 条；
+- 内存里同样设上限 2000，从最旧的"已处理"事件开始丢，pending 不动。
+
+### 8.3 I2 升级链
+
+- `AppCore` 在每条 occurrence 上维护 `notifiedAtTs` / `escalationLevel`；
+- `onTick()` 按"提醒弹出后过了多久"推进：≥2 分钟 → 2 级（语音加强），
+  ≥`plan.escalateAfterMin`（默认 15）→ 3 级，转 `escalated` 并记 `escalate(timeout)` 事件；
+- 对外字段：`escalationLevel`（0–3）、`nextEscalationInSec`；
+- 信号：`AppCore::escalationChanged(occurrenceId, level)`，`ReminderVM` 转发并刷新 `current`；
+- 基线用 `notifiedAtTs` 而不是 `dueTs`：App 被杀一夜回来时不会一睁眼就跳到 3 级。
+
+三级时"打电话/强提示"（`DeviceVM.sos(3)`）**没有**从数据层直接调用：
+订阅 `escalationChanged(_, 3)` 由 QML 或 B2 的 `DeviceVM` 处理，避免 `AppCore` 反向依赖 `DeviceVM`。
+
+### 8.4 可注入时钟与新增用例
+
+`AppCore::setClockForTests(ms)` / `tickForTests()` 只影响本类的"现在/今天"，不碰系统时钟。
+注意 `setClockForTests` **故意不改 `m_day`**：跨天必须由 `onTick` 自己发现（归档昨天 + 重建今天），
+注入时顺手改会把要测的路径抄近路跳过。`createPlan/updatePlan/...` 里重置 `m_day` 的地方也都改成取注入时钟。
+
+| 新增测试 | 覆盖 |
+| --- | --- |
+| `tests/tst_data_layer.cpp`（4 例） | 同步队列生命周期/幂等、升级链 1→2→3、跨天归档与统计 |
+| `tests/tst_restart.cpp`（1 例，10 轮） | 同库连续 10 次"启动→校验→写一条→退出"，验证落盘与恢复 |
+
+完整 `ctest`：**6/6 通过**（原 `facade_app_core` 24 条契约一字未改、原样通过）。
+

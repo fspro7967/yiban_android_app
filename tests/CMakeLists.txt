@@ -26,6 +26,32 @@ add_test(NAME facade_app_core COMMAND tst_app_core)
 set_tests_properties(facade_app_core PROPERTIES ENVIRONMENT
     "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_app_core.sqlite")
 
+# B1 数据层新增行为：I1 同步队列、I2 升级链、跨天归档。
+qt_add_executable(tst_data_layer
+    tst_data_layer.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.h
+)
+target_include_directories(tst_data_layer PRIVATE ${CMAKE_SOURCE_DIR}/src/vm)
+target_link_libraries(tst_data_layer PRIVATE Qt6::Core Qt6::Qml Qt6::Test Qt6::Sql)
+
+add_test(NAME data_layer COMMAND tst_data_layer)
+set_tests_properties(data_layer PROPERTIES ENVIRONMENT
+    "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_data_layer.sqlite")
+
+# 跨进程重启：10 次"启动 → 校验 → 写一条 → 退出"，验证落盘和恢复。
+qt_add_executable(tst_restart
+    tst_restart.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.h
+)
+target_include_directories(tst_restart PRIVATE ${CMAKE_SOURCE_DIR}/src/vm)
+target_link_libraries(tst_restart PRIVATE Qt6::Core Qt6::Qml Qt6::Test Qt6::Sql)
+
+add_test(NAME restart_persistence COMMAND tst_restart)
+set_tests_properties(restart_persistence PROPERTIES ENVIRONMENT
+    "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_restart.sqlite")
+
 # 管理后台"测试连接"的探测逻辑：用本机假服务器覆盖各种应答，不需要外网。
 find_package(Qt6 REQUIRED COMPONENTS Network)
 
