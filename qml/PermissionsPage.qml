@@ -193,8 +193,8 @@ Item {
                         height: manualColumn.implicitHeight + page.theme.gap * 1.5
                         radius: page.theme.radius
                         color: page.theme.surface
-                        border.width: 2
-                        border.color: page.theme.line
+                        border.width: 1
+                        border.color: page.theme.cardLine
 
                         Column {
                             id: manualColumn

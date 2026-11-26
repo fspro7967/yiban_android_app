@@ -193,8 +193,8 @@ Item {
                     height: contactColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: contactColumn
@@ -376,8 +376,8 @@ Item {
                     height: rateColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: rateColumn
@@ -444,8 +444,8 @@ Item {
                     height: networkColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: networkColumn
@@ -499,7 +499,7 @@ Item {
                             label: "服务器地址"
                             placeholder: "https://..."
                             text: DeviceVM.serverUrl
-                            fontSize: page.theme.px(20)
+                            fontSize: page.theme.fontLabel
                             maxLength: 80
                             inputMethodHints: Qt.ImhUrlCharactersOnly
                             onTextChanged: page.probeText = ""
@@ -513,7 +513,7 @@ Item {
                             placeholder: "ses-… 配对码不可用时使用"
                             echoMode: TextInput.Password
                             text: ""
-                            fontSize: page.theme.px(20)
+                            fontSize: page.theme.fontLabel
                             maxLength: 256
                         }
 
@@ -595,8 +595,8 @@ Item {
                     height: syncColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: syncColumn
@@ -685,8 +685,8 @@ Item {
                     height: logColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: logColumn
@@ -708,7 +708,7 @@ Item {
                             theme: page.theme
                             role: "label"
                             color: page.theme.inkSoft
-                            text: "提醒、计划、记录、设置的每一步都会记在这里。演示版只保存在内存里，最多 200 条，重启后清空。"
+                            text: "提醒、计划、记录、设置的每一步都会记在这里。只保存在内存里，最多 200 条，重启后清空。"
                             wrapMode: Text.WordWrap
                         }
 

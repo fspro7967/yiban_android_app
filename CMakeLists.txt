@@ -211,6 +211,8 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     )
 
     set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_APP_NAME "颐伴")
+    # 版本号只在 project(VERSION) 写一处：安卓“应用信息”里的版本和设置页底部显示的是同一个数。
+    set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}")
 
 # Define target properties for Android with Qt 6 as:
     set_property(TARGET yiban_android_app APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -240,6 +242,8 @@ endif()
 
 # qmltyperegistrations 生成文件用 <device_vm.h> 这样的裸文件名 include 头，
 # 因此 facade 目录必须进 include path。
+target_compile_definitions(yiban_android_app PRIVATE YIBAN_VERSION="${PROJECT_VERSION}")
+
 target_include_directories(yiban_android_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vm
     ${CMAKE_CURRENT_SOURCE_DIR}/src/comm
