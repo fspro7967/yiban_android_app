@@ -11,6 +11,25 @@ Item {
 
     signal back()
 
+    // 少记一杯：删掉今天最近的一条喝水记录（按多了能改），撤销条里可以加回来。
+    function removeLastWater() {
+        var list = RecordVM.records
+        var d = Fmt.now
+        var today0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+        var best = null
+        for (var i = 0; i < list.length; ++i) {
+            var r = list[i]
+            if (r.type !== "water" || Number(r.at) < today0)
+                continue
+            if (!best || Number(r.at) >= Number(best.at))
+                best = r
+        }
+        if (!best)
+            return
+        if (RecordVM.removeRecord(best.recordId))
+            Undo.show("已少记一杯，现在 " + RecordVM.waterCups + " 杯", function () { RecordVM.addWater() })
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -45,20 +64,18 @@ Item {
                 topPadding: page.theme.gapSmall
                 bottomPadding: page.theme.gap
 
-                Rectangle {
+                Card {
+                    objectName: "waterCard"
                     width: list.width
-                    height: waterColumn.implicitHeight + page.theme.gap * 1.5
-                    radius: page.theme.radius
-                    color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    height: waterColumn.implicitHeight + page.theme.px(18) * 2
+                    theme: page.theme
 
                     Column {
                         id: waterColumn
-                        width: parent.width - page.theme.gap * 2
-                        x: page.theme.gap
-                        y: page.theme.px(12)
-                        spacing: page.theme.gapSmall
+                        width: parent.width - page.theme.px(18) * 2
+                        x: page.theme.px(18)
+                        y: page.theme.px(18)
+                        spacing: page.theme.px(12)
 
                         RowLayout {
                             width: parent.width
@@ -66,146 +83,255 @@ Item {
                             AppText {
                                 theme: page.theme
                                 role: "heading"
-                                text: "喝水"
+                                font.weight: Font.Bold
+                                text: "今天喝水"
                             }
 
-                            Item { Layout.fillWidth: true }
-
-                            AppText {
-                                theme: page.theme
-                                role: "label"
-                                color: page.theme.inkSoft
-                                text: "每杯约 250 毫升"
-                            }
                         }
 
                         RowLayout {
                             width: parent.width
-                            spacing: page.theme.px(6)
+                            spacing: page.theme.px(8)
 
                             AppText {
+                                Layout.alignment: Qt.AlignBaseline
                                 theme: page.theme
                                 role: "display"
-                                font.pixelSize: page.theme.px(56)
+                                font.pixelSize: page.theme.px(52)
+                                font.weight: Font.Black
                                 color: page.theme.primaryInk
                                 text: RecordVM.waterCups
                                 wrapMode: Text.NoWrap
                             }
 
                             AppText {
+                                Layout.alignment: Qt.AlignBaseline
                                 theme: page.theme
                                 role: "heading"
                                 color: page.theme.inkSoft
                                 text: "/ " + RecordVM.waterGoal + " 杯"
+                                wrapMode: Text.NoWrap
                             }
 
-                            Item { Layout.fillWidth: true }
+                            AppText {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignBaseline
+                                theme: page.theme
+                                role: "label"
+                                font.pixelSize: page.theme.px(18)
+                                color: page.theme.inkSoft
+                                horizontalAlignment: Text.AlignRight
+                                text: "每杯 250 毫升"
+                                wrapMode: Text.WordWrap
+                            }
                         }
 
-                        Row {
+                        // 一杯一个杯子图标：喝了的填绿，没喝的只有轮廓。
+                        Grid {
+                            id: cupGrid
                             width: parent.width
-                            spacing: page.theme.px(6)
+                            columns: Math.min(RecordVM.waterGoal, 8)
+                            spacing: page.theme.px(4)
 
                             Repeater {
                                 model: RecordVM.waterGoal
 
-                                delegate: Rectangle {
+                                delegate: Item {
                                     required property int index
+                                    width: (cupGrid.width - cupGrid.spacing * (cupGrid.columns - 1)) / cupGrid.columns
+                                    height: page.theme.px(40)
 
-                                    width: Math.floor((waterColumn.width - page.theme.px(6) * (RecordVM.waterGoal - 1)) / RecordVM.waterGoal)
-                                    height: page.theme.px(34)
-                                    radius: page.theme.px(6)
-                                    color: index < RecordVM.waterCups ? page.theme.primary : page.theme.surfaceAlt
-                                    border.width: 2
-                                    border.color: index < RecordVM.waterCups ? page.theme.primary : page.theme.line
+                                    Icon {
+                                        anchors.centerIn: parent
+                                        name: "cup"
+                                        size: Math.min(parent.width, page.theme.px(40))
+                                        strokeWidth: 1.8
+                                        color: parent.index < RecordVM.waterCups ? page.theme.primary : "#C9BBA5"
+                                        fill: parent.index < RecordVM.waterCups ? "#CFE6CB" : "transparent"
+                                    }
                                 }
                             }
                         }
 
-                        AppButton {
+                        // 两个键对半分；特大字号下并排放不下，改成上下排。
+                        GridLayout {
                             width: parent.width
-                            height: page.theme.buttonLarge
-                            theme: page.theme
-                            text: RecordVM.waterCups >= RecordVM.waterGoal ? "今天已经喝够啦" : "＋ 我喝了一杯水"
-                            kind: "primary"
-                            enabled: RecordVM.waterCups < RecordVM.waterGoal
-                            onClicked: {
-                                var id = RecordVM.addWater()
-                                if (id > 0)
-                                    Undo.show("已记下：第 " + RecordVM.waterCups + " 杯水",
-                                              function () { RecordVM.removeRecord(id) })
+                            columns: page.theme.scaleLevel >= 2 ? 1 : 2
+                            columnSpacing: page.theme.gapSmall
+                            rowSpacing: page.theme.gapSmall
+
+                            AppButton {
+                                objectName: "addWater"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: page.theme.button
+                                theme: page.theme
+                                text: RecordVM.waterCups >= RecordVM.waterGoal ? "今天喝够啦" : "喝了一杯"
+                                kind: "primary"
+                                enabled: RecordVM.waterCups < RecordVM.waterGoal
+                                onClicked: {
+                                    var id = RecordVM.addWater()
+                                    if (id > 0)
+                                        Undo.show("已记下：第 " + RecordVM.waterCups + " 杯水",
+                                                  function () { RecordVM.removeRecord(id) })
+                                }
+                            }
+
+                            AppButton {
+                                objectName: "removeWater"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: page.theme.button
+                                theme: page.theme
+                                text: "少记一杯"
+                                kind: "secondary"
+                                enabled: RecordVM.waterCups > 0
+                                onClicked: page.removeLastWater()
                             }
                         }
                     }
                 }
 
-                Rectangle {
+                Card {
+                    objectName: "sleepCard"
                     width: list.width
-                    height: sleepColumn.implicitHeight + page.theme.gap * 1.5
-                    radius: page.theme.radius
-                    color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    height: sleepColumn.implicitHeight + page.theme.px(18) * 2
+                    theme: page.theme
 
                     Column {
                         id: sleepColumn
-                        width: parent.width - page.theme.gap * 2
-                        x: page.theme.gap
-                        y: page.theme.px(12)
-                        spacing: page.theme.gapSmall
-
-                        AppText {
-                            width: parent.width
-                            theme: page.theme
-                            role: "heading"
-                            text: "睡眠"
-                        }
+                        width: parent.width - page.theme.px(18) * 2
+                        x: page.theme.px(18)
+                        y: page.theme.px(18)
+                        spacing: page.theme.px(12)
 
                         RowLayout {
                             width: parent.width
 
                             AppText {
                                 theme: page.theme
-                                role: "display"
-                                font.pixelSize: page.theme.scaleLevel === 2 ? page.theme.px(32) : page.theme.px(46)
-                                color: page.theme.primaryInk
-                                text: Fmt.durationText(RecordVM.sleepMinutes)
-                                wrapMode: Text.NoWrap
+                                role: "heading"
+                                font.weight: Font.Bold
+                                text: "睡眠"
                             }
 
                             Item { Layout.fillWidth: true }
-                        }
-
-                        Column {
-                            width: parent.width
-                            spacing: page.theme.px(2)
 
                             AppText {
-                                width: parent.width
+                                visible: RecordVM.sleepStart !== "" && RecordVM.sleepEnd !== ""
                                 theme: page.theme
-                                role: "body"
+                                role: "label"
+                                font.pixelSize: page.theme.px(19)
                                 color: page.theme.inkSoft
-                                text: "入睡 " + (RecordVM.sleepStart ? RecordVM.sleepStart : "未记录")
-                            }
-
-                            AppText {
-                                width: parent.width
-                                theme: page.theme
-                                role: "body"
-                                color: page.theme.inkSoft
-                                text: "起床 " + (RecordVM.sleepEnd ? RecordVM.sleepEnd : "未记录")
+                                text: "最近一次"
                             }
                         }
 
+                        // 时长：数字大、单位小，“7 小时 50 分”不再贴到右边。
                         RowLayout {
+                            id: sleepRow
+                            spacing: page.theme.px(4)
+                            readonly property int mins: Math.max(0, RecordVM.sleepMinutes)
+
+                            AppText {
+                                Layout.alignment: Qt.AlignBaseline
+                                theme: page.theme
+                                role: "display"
+                                font.pixelSize: page.theme.px(46)
+                                font.weight: Font.Black
+                                color: page.theme.primaryInk
+                                text: Math.floor(sleepRow.mins / 60)
+                                wrapMode: Text.NoWrap
+                            }
+
+                            AppText {
+                                Layout.alignment: Qt.AlignBaseline
+                                Layout.rightMargin: page.theme.px(6)
+                                theme: page.theme
+                                role: "body"
+                                color: page.theme.inkSoft
+                                text: "小时"
+                            }
+
+                            AppText {
+                                Layout.alignment: Qt.AlignBaseline
+                                theme: page.theme
+                                role: "display"
+                                font.pixelSize: page.theme.px(46)
+                                font.weight: Font.Black
+                                color: page.theme.primaryInk
+                                text: sleepRow.mins % 60
+                                wrapMode: Text.NoWrap
+                            }
+
+                            AppText {
+                                Layout.alignment: Qt.AlignBaseline
+                                theme: page.theme
+                                role: "body"
+                                color: page.theme.inkSoft
+                                text: "分"
+                            }
+                        }
+
+                        GridLayout {
                             width: parent.width
-                            spacing: page.theme.gapSmall
+                            columns: 2
+                            columnSpacing: page.theme.gapSmall
+
+                            Repeater {
+                                model: [
+                                    { label: "入睡", value: RecordVM.sleepStart },
+                                    { label: "起床", value: RecordVM.sleepEnd }
+                                ]
+
+                                delegate: Rectangle {
+                                    id: timeBox
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Layout.preferredWidth: 1
+                                    Layout.preferredHeight: boxCol.implicitHeight + page.theme.px(10) * 2
+                                    radius: page.theme.radiusSmall
+                                    color: page.theme.surfaceAlt
+
+                                    Column {
+                                        id: boxCol
+                                        x: page.theme.px(14)
+                                        y: page.theme.px(10)
+                                        width: parent.width - page.theme.px(28)
+
+                                        AppText {
+                                            theme: page.theme
+                                            role: "label"
+                                            font.pixelSize: page.theme.px(19)
+                                            color: page.theme.inkSoft
+                                            text: timeBox.modelData.label
+                                        }
+
+                                        AppText {
+                                            theme: page.theme
+                                            role: "heading"
+                                            font.weight: Font.Bold
+                                            color: timeBox.modelData.value ? page.theme.ink : page.theme.inkSoft
+                                            text: timeBox.modelData.value ? timeBox.modelData.value : "未记录"
+                                            wrapMode: Text.NoWrap
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        GridLayout {
+                            width: parent.width
+                            columns: page.theme.scaleLevel >= 2 ? 1 : 2
+                            columnSpacing: page.theme.gapSmall
+                            rowSpacing: page.theme.gapSmall
 
                             AppButton {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: page.theme.touch
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: page.theme.button
                                 theme: page.theme
-                                text: "我睡了"
+                                text: "我要睡了"
                                 kind: "secondary"
                                 onClicked: {
                                     var id = RecordVM.markSleepStart()
@@ -215,9 +341,10 @@ Item {
 
                             AppButton {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: page.theme.touch
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: page.theme.button
                                 theme: page.theme
-                                text: "起床"
+                                text: "我起床了"
                                 kind: "primary"
                                 onClicked: {
                                     var id = RecordVM.markSleepEnd()
@@ -230,20 +357,18 @@ Item {
                             width: parent.width
                             theme: page.theme
                             role: "label"
+                            font.pixelSize: page.theme.px(19)
                             color: page.theme.inkSoft
-                            text: "点一下记录当前时间，不用手动输入。"
+                            text: "点一下就记下当前时间"
                             wrapMode: Text.WordWrap
                         }
                     }
                 }
 
-                Rectangle {
+                Card {
                     width: list.width
                     height: activityColumn.implicitHeight + page.theme.gap * 1.5
-                    radius: page.theme.radius
-                    color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    theme: page.theme
 
                     Column {
                         id: activityColumn
@@ -281,10 +406,11 @@ Item {
 
                         RowLayout {
                             width: parent.width
-                            spacing: page.theme.gapSmall
+                            spacing: page.theme.px(8)
 
                             AppButton {
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 1
                                 Layout.preferredHeight: page.theme.buttonLarge
                                 theme: page.theme
                                 text: "散步"
@@ -298,6 +424,7 @@ Item {
 
                             AppButton {
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 1
                                 Layout.preferredHeight: page.theme.buttonLarge
                                 theme: page.theme
                                 text: "家务"
@@ -311,6 +438,7 @@ Item {
 
                             AppButton {
                                 Layout.fillWidth: true
+                                Layout.preferredWidth: 1
                                 Layout.preferredHeight: page.theme.buttonLarge
                                 theme: page.theme
                                 text: "其他"
@@ -346,15 +474,6 @@ Item {
                             text: "今天的记录会用于本周统计。"
                         }
 
-                        AppText {
-                            width: parent.width
-                            theme: page.theme
-                            role: "label"
-                            color: page.theme.primaryInk
-                            opacity: 0.8
-                            text: "演示版只保存在本机，不会上传。"
-                            wrapMode: Text.WordWrap
-                        }
                     }
                 }
             }

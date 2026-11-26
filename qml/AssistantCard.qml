@@ -27,8 +27,8 @@ Rectangle {
     height: column.implicitHeight + theme.gap * 1.5
     radius: theme.radius
     color: theme.surface
-    border.width: 2
-    border.color: theme.line
+    border.width: 1
+    border.color: theme.cardLine
 
     Connections {
         target: AssistantVM

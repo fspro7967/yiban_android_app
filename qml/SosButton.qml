@@ -17,8 +17,7 @@ Rectangle {
     implicitHeight: theme.px(92)
     radius: theme.radius
     color: _holding ? "#9E1B14" : theme.danger
-    border.width: 2
-    border.color: "#7F0F0A"
+    border.width: 0
 
     Row {
         anchors.fill: parent
@@ -32,12 +31,12 @@ Rectangle {
             color: "#FFFFFF"
             anchors.verticalCenter: parent.verticalCenter
 
-            AppText {
+            Icon {
                 anchors.centerIn: parent
-                theme: control.theme
-                role: "heading"
+                name: "phone"
+                size: Math.round(parent.width * 0.5)
+                strokeWidth: 2.4
                 color: control.theme.danger
-                text: "!"
             }
         }
 
@@ -59,7 +58,15 @@ Rectangle {
                 role: "label"
                 color: "#FFFFFF"
                 opacity: 0.9
-                text: control._holding ? "松手即取消" : "长按 3 秒"
+                width: parent.width
+                wrapMode: Text.NoWrap
+                fontSizeMode: Text.HorizontalFit
+                minimumPixelSize: control.theme.px(15)
+                elide: Text.ElideRight
+                // 写明打给谁：老人知道按下去会发生什么，才敢在真需要时按。
+                text: control._holding ? "松手即取消"
+                    : ProfileVM.caregiverName.length > 0 ? "长按 3 秒，打给" + ProfileVM.caregiverName
+                    : "长按 3 秒"
             }
         }
     }

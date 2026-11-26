@@ -16,6 +16,8 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setOrganizationName("Yiban");
     QCoreApplication::setApplicationName("YibanElder");
+    // 版本号来自 CMake 的 project(VERSION)，QML 里用 Qt.application.version 读。
+    QCoreApplication::setApplicationVersion(QStringLiteral(YIBAN_VERSION));
 
     QTranslator translator;
     const QStringList uiLanguages = QLocale::system().uiLanguages();

@@ -10,14 +10,15 @@ Rectangle {
     property Theme theme
     property string message: ""
     property string actionText: ""
+    property string iconName: "alert"
 
     signal actionClicked()
 
-    implicitHeight: column.implicitHeight + bar.theme.gap * 1.2
+    implicitHeight: column.implicitHeight + bar.theme.gap
     radius: bar.theme.radiusSmall
     color: bar.theme.amberSoft
-    border.width: 2
-    border.color: bar.theme.amber
+    border.width: 1
+    border.color: bar.theme.amberBar
 
     Column {
         id: column
@@ -26,14 +27,28 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: bar.theme.gapSmall
 
-        AppText {
+        Row {
             width: parent.width
-            theme: bar.theme
-            role: "body"
-            color: bar.theme.amberInk
-            font.weight: Font.DemiBold
-            text: "⚠ " + bar.message
-            wrapMode: Text.WordWrap
+            spacing: bar.theme.gapSmall
+
+            Icon {
+                id: alertIcon
+                y: Math.max(0, (bar.theme.fontLabel * 1.3 - height) / 2)
+                name: bar.iconName
+                size: Math.round(bar.theme.fontLabel * 1.15)
+                color: bar.theme.amberInk
+            }
+
+            AppText {
+                width: parent.width - alertIcon.width - bar.theme.gapSmall
+                theme: bar.theme
+                role: "label"
+                color: bar.theme.amberInk
+                font.weight: Font.DemiBold
+                text: bar.message
+                wrapMode: Text.WordWrap
+                lineHeight: 1.0
+            }
         }
 
         AppButton {

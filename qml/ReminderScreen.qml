@@ -48,6 +48,13 @@ Item {
     }
 
     readonly property int snoozeLeft: occ ? occ.snoozeRemaining : 3
+    // 从原定时刻（推迟过的话从推迟到的时刻）起已经过了几分钟，用来显示“已过 N 分钟”标签。
+    readonly property int lateMinutes: {
+        if (!occ)
+            return 0
+        var base = Number(occ.snoozeUntilTs || 0) > 0 ? Number(occ.snoozeUntilTs) : Number(occ.dueTs)
+        return Math.max(0, Math.floor((nowMs - base) / 60000))
+    }
 
     anchors.fill: parent
     visible: active
@@ -185,21 +192,6 @@ Item {
         }
     }
 
-    Rectangle {
-        id: glow
-        anchors.fill: parent
-        color: "transparent"
-        border.width: screen.theme.px(8)
-        border.color: screen.theme.reminderAccent
-        opacity: 0.6
-    }
-
-    SequentialAnimation {
-        running: screen.active
-        loops: Animation.Infinite
-        NumberAnimation { target: glow; property: "opacity"; from: 0.75; to: 0.2; duration: 900 }
-        NumberAnimation { target: glow; property: "opacity"; from: 0.2; to: 0.75; duration: 900 }
-    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -220,9 +212,7 @@ Item {
                 Layout.maximumWidth: chipText.implicitWidth + screen.theme.px(26)
                 Layout.preferredHeight: screen.theme.px(50)
                 radius: height / 2
-                color: Qt.rgba(1, 1, 1, 0.14)
-                border.width: 1
-                border.color: Qt.rgba(1, 1, 1, 0.3)
+                color: screen.theme.reminderAccent
 
                 AppText {
                     id: chipText
@@ -230,7 +220,8 @@ Item {
                     width: Math.min(implicitWidth, parent.width - screen.theme.px(26))
                     theme: screen.theme
                     role: "label"
-                    color: screen.theme.reminderInk
+                    font.weight: Font.Bold
+                    color: screen.theme.reminderBgBottom
                     // 两种文案一样长：夜间静音时直接换字，不加长标签，也不多占一行。
                     text: DeviceVM.nightQuietActive ? "夜间静音" : "到点提醒"
                     wrapMode: Text.NoWrap
@@ -244,12 +235,13 @@ Item {
 
             AppButton {
                 Layout.fillWidth: true
-                Layout.minimumWidth: Math.min(implicitWidth, screen.theme.px(168))
-                Layout.preferredWidth: screen.theme.px(168)
-                Layout.maximumWidth: screen.theme.px(168)
+                Layout.minimumWidth: Math.min(implicitWidth, screen.theme.px(190))
+                Layout.preferredWidth: screen.theme.px(190)
+                Layout.maximumWidth: screen.theme.px(190)
                 Layout.preferredHeight: screen.theme.touch
                 theme: screen.theme
                 text: "再听一遍"
+                iconName: "speaker"
                 kind: "outlineLight"
                 onClicked: {
                     if (screen.occ)
@@ -259,29 +251,89 @@ Item {
         }
 
         Flickable {
+            id: infoScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: width
-            contentHeight: info.height
+            contentHeight: Math.max(height, info.y + info.height)
             clip: true
+            boundsBehavior: Flickable.StopAtBounds
 
             Column {
                 id: info
                 width: parent.width
-                spacing: screen.theme.px(6)
+                // 内容少时放在中间，不再全挤在上半屏、中间留一大块空白。
+                y: Math.max(0, (infoScroll.height - height) / 2)
+                spacing: screen.theme.px(10)
 
-                AppText {
-                    theme: screen.theme
-                    role: "heading"
-                    color: screen.theme.reminderAccent
-                    text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
-                    wrapMode: Text.NoWrap
+                Rectangle {
+                    id: badge
+                    width: screen.theme.px(88)
+                    height: width
+                    radius: screen.theme.px(26)
+                    color: Qt.rgba(1, 0.76, 0.29, 0.16)
+
+                    Icon {
+                        anchors.centerIn: parent
+                        name: screen.occ ? Fmt.iconFor(screen.occ.title) : "bell"
+                        size: Math.round(parent.width * 0.56)
+                        strokeWidth: 2
+                        color: screen.theme.reminderAccent
+                    }
+
+                    SequentialAnimation on scale {
+                        running: screen.active
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 1.08; duration: 700; easing.type: Easing.InOutQuad }
+                        NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutQuad }
+                    }
+                }
+
+                Flow {
+                    width: parent.width
+                    spacing: screen.theme.px(12)
+                    topPadding: screen.theme.px(6)
+
+                    AppText {
+                        id: dueText
+                        theme: screen.theme
+                        role: "hero"
+                        font.pixelSize: screen.theme.px(44)
+                        font.weight: Font.Black
+                        color: screen.theme.reminderAccent
+                        text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
+                        wrapMode: Text.NoWrap
+                    }
+
+                    Rectangle {
+                        objectName: "lateChip"
+                        visible: screen.lateMinutes >= 1
+                        y: (dueText.height - height) / 2
+                        width: lateText.implicitWidth + screen.theme.px(24)
+                        height: lateText.implicitHeight + screen.theme.px(8)
+                        radius: height / 2
+                        color: screen.theme.amberSoft
+
+                        AppText {
+                            id: lateText
+                            anchors.centerIn: parent
+                            theme: screen.theme
+                            role: "label"
+                            font.pixelSize: screen.theme.px(19)
+                            font.weight: Font.Bold
+                            color: screen.theme.amberInk
+                            text: Fmt.agoText(screen.lateMinutes)
+                            wrapMode: Text.NoWrap
+                        }
+                    }
                 }
 
                 AppText {
                     width: parent.width
                     theme: screen.theme
                     role: "hero"
+                    font.pixelSize: screen.theme.px(58)
+                    font.weight: Font.Black
                     color: screen.theme.reminderInk
                     text: screen.occ ? screen.occ.title : ""
                     wrapMode: Text.WordWrap
@@ -292,8 +344,8 @@ Item {
                     visible: text !== ""
                     theme: screen.theme
                     role: "heading"
+                    font.weight: Font.Bold
                     color: screen.theme.reminderInk
-                    opacity: 0.95
                     text: screen.occ ? (screen.occ.dose || "") : ""
                 }
 
@@ -302,8 +354,7 @@ Item {
                     visible: text !== ""
                     theme: screen.theme
                     role: "body"
-                    color: screen.theme.reminderInk
-                    opacity: 0.8
+                    color: screen.theme.reminderGhost
                     text: screen.occ ? (screen.occ.note || "") : ""
                 }
             }
@@ -315,6 +366,7 @@ Item {
             id: escalationBanner
             objectName: "escalationBanner"
             Layout.fillWidth: true
+            visible: screen.inChain || screen.escalated
             Layout.preferredHeight: escalationColumn.implicitHeight + screen.theme.px(24)
             radius: screen.theme.radiusSmall
             color: screen.level >= 3 ? screen.theme.sosRed
@@ -392,7 +444,8 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: screen.theme.reminderConfirm
                 theme: screen.theme
-                text: screen.occ && screen.occ.title.indexOf("药") >= 0 ? "✓ 我已吃好" : "✓ 我已经完成"
+                text: screen.occ && screen.occ.title.indexOf("药") >= 0 ? "我已吃好" : "我已经完成"
+                iconName: "check"
                 kind: "light"
                 onClicked: screen.confirm()
             }
@@ -401,7 +454,9 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: screen.theme.buttonLarge
                 theme: screen.theme
-                text: "稍后 10 分钟"
+                text: "稍后 10 分钟再提醒"
+                // 还能推几次直接写在键上，不用再往下找一行小字。
+                subtitle: !screen.escalated && screen.snoozeLeft > 0 ? "还可以推迟 " + screen.snoozeLeft + " 次" : ""
                 kind: "outlineLight"
                 enabled: !screen.escalated && screen.snoozeLeft > 0
                 onClicked: screen.snooze()
@@ -409,14 +464,15 @@ Item {
 
             AppText {
                 Layout.fillWidth: true
+                visible: screen.escalated || screen.snoozeLeft <= 0
                 theme: screen.theme
                 role: "label"
                 color: screen.theme.reminderInk
-                opacity: 0.75
+                opacity: 0.85
                 horizontalAlignment: Text.AlignHCenter
                 text: screen.escalated ? "已通知家人，请尽快确认"
-                    : screen.snoozeLeft > 0 ? "还可以推迟 " + screen.snoozeLeft + " 次"
-                    : "已推迟 3 次，请先吃药或联系家人"
+                    : "已推迟 3 次，请先完成或联系家人"
+                wrapMode: Text.WordWrap
             }
         }
     }

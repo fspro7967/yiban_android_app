@@ -17,6 +17,12 @@ ApplicationWindow {
 
     Theme { id: appTheme }
 
+    // 管理后台专用：普通字号，不随老人在设置里选的字号档变大。
+    Theme {
+        id: adminTheme
+        compact: true
+    }
+
     readonly property Theme theme: appTheme
 
     readonly property int safeTop: SafeArea.margins.top
@@ -216,7 +222,7 @@ ApplicationWindow {
     Component {
         id: adminComponent
         AdminPage {
-            theme: window.theme
+            theme: adminTheme
             onBack: window.goBack()
         }
     }
