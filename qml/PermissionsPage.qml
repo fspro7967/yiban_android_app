@@ -4,8 +4,10 @@ import QtQuick
 import QtQuick.Layouts
 
 // 权限检查：漏开一项就可能"到点不响、锁屏不亮、呼救打不出去"。
-// 能查到的项读 DeviceVM.permissions（中文标签列表，已授权的才在里面），
-// 查不到的（各家手机自己的后台/自启动开关）只能写清楚去哪里开，请用户手动确认。
+// 能查到的项读 DeviceVM.permissionDiagnostics（I3：{key,label,granted,canOpenSettings}），
+// 能跳转的直接调 DeviceVM.openSystemSettings(key) 去对应的系统设置页；
+// DeviceVM 每 2 秒重查一次，从设置页回来不用手动刷新。
+// 查不到的（HyperOS 等各家自己的自启动 / 后台弹出界面开关）只能写清楚去哪里开，请用户手动确认。
 Item {
     id: page
 
@@ -14,43 +16,30 @@ Item {
     signal back()
 
     readonly property bool onAndroid: Qt.platform.os === "android"
-    readonly property var granted: DeviceVM.permissions
+    readonly property var diagnostics: DeviceVM.permissionDiagnostics
 
-    // action：点"去开启"时调用的 DeviceVM 方法名；空串表示没有直接入口。
-    readonly property var checkable: [
-        { label: "通知", why: "不开的话，到点提醒不会弹出来。", action: "requestNotificationPermission" },
-        { label: "精确闹钟", why: "不开的话，提醒可能晚几分钟才响。", action: "requestExactAlarmPermission" },
-        { label: "锁屏提醒", why: "不开的话，锁屏时只响铃不亮屏。", action: "requestFullScreenPermission" },
-        { label: "电话", why: "紧急呼救时要用它给家人打电话。配对时会请求。", action: "" },
-        { label: "短信", why: "紧急呼救时同时给家人发短信。配对时会请求。", action: "" }
-    ]
+    // 每一项为什么要开；key 对应 permissionDiagnostics 的 key。没有写的项只显示名字。
+    readonly property var reasons: ({
+        "notifications": "不开的话，到点提醒不会弹出来。",
+        "exactAlarm": "不开的话，提醒可能晚几分钟才响。",
+        "fullscreenIntent": "不开的话，锁屏时只响铃不亮屏。",
+        "battery": "不加入的话，手机省电时可能把颐伴关掉，夜里的提醒就不响了。",
+        "phone": "紧急呼救时要用它给家人打电话。",
+        "sms": "紧急呼救时同时给家人发短信。",
+        "microphone": "和语音助手说话时要用。不用语音可以不开。"
+    })
 
     readonly property var manual: [
-        { label: "不限制后台耗电", how: "系统设置 → 应用设置 → 颐伴 → 省电策略 → 选“无限制”。" },
         { label: "允许自启动", how: "系统设置 → 应用设置 → 颐伴 → 打开“自启动”，重启手机后提醒才不会丢。" },
         { label: "后台弹出界面", how: "系统设置 → 应用设置 → 颐伴 → 其他权限 → 允许“后台弹出界面”。" },
         { label: "锁屏显示", how: "同一页里允许“锁屏显示”，锁屏时提醒页才能盖在锁屏上面。" }
     ]
 
-    function isGranted(label) {
-        return page.granted.indexOf(label) >= 0
-    }
+    readonly property int missingCount: Fmt.missingPermissions(page.diagnostics)
 
-    function request(action) {
-        if (action === "requestNotificationPermission")
-            DeviceVM.requestNotificationPermission()
-        else if (action === "requestExactAlarmPermission")
-            DeviceVM.requestExactAlarmPermission()
-        else if (action === "requestFullScreenPermission")
-            DeviceVM.requestFullScreenPermission()
-    }
-
-    readonly property int missingCount: {
-        var n = 0
-        for (var i = 0; i < page.checkable.length; ++i)
-            if (!page.isGranted(page.checkable[i].label))
-                ++n
-        return n
+    function openSettings(key) {
+        if (!DeviceVM.openSystemSettings(key))
+            Notify.info("打不开系统设置，请到 系统设置 → 应用设置 → 颐伴 里手动开启")
     }
 
     ColumnLayout {
@@ -100,8 +89,8 @@ Item {
                     theme: page.theme
                     role: "heading"
                     color: page.missingCount === 0 ? page.theme.primaryInk : page.theme.amberInk
-                    text: page.missingCount === 0 ? "能查到的权限都开好了"
-                        : "还有 " + page.missingCount + " 项没开"
+                    text: page.missingCount === 0 ? "必需的权限都开好了"
+                        : "还有 " + page.missingCount + " 项必需的权限没开"
                     wrapMode: Text.WordWrap
                 }
 
@@ -110,24 +99,26 @@ Item {
                     theme: page.theme
                     role: "label"
                     color: page.theme.inkSoft
-                    text: "开完回到这里，几秒钟后会自动刷新。"
+                    text: "开完回到这里，两秒内会自动刷新。"
                     wrapMode: Text.WordWrap
                 }
 
                 Repeater {
-                    model: page.checkable
+                    model: page.diagnostics
 
                     delegate: Rectangle {
                         id: card
                         required property var modelData
-                        readonly property bool ok: page.isGranted(modelData.label)
+                        readonly property bool ok: modelData.granted === true
+                        readonly property bool optional: Fmt.optionalPermission(modelData.key)
 
+                        objectName: "permission_" + modelData.key
                         width: list.width
                         height: cardColumn.implicitHeight + page.theme.gap * 1.5
                         radius: page.theme.radius
-                        color: card.ok ? page.theme.surface : page.theme.amberSoft
+                        color: card.ok || card.optional ? page.theme.surface : page.theme.amberSoft
                         border.width: 2
-                        border.color: card.ok ? page.theme.line : page.theme.amber
+                        border.color: card.ok || card.optional ? page.theme.line : page.theme.amber
 
                         Column {
                             id: cardColumn
@@ -140,39 +131,43 @@ Item {
                                 width: parent.width
 
                                 AppText {
+                                    Layout.fillWidth: true
                                     theme: page.theme
                                     role: "heading"
-                                    text: card.modelData.label
+                                    text: card.modelData.label + (card.optional ? "（可选）" : "")
+                                    wrapMode: Text.WordWrap
                                 }
-
-                                Item { Layout.fillWidth: true }
 
                                 AppText {
                                     theme: page.theme
                                     role: "body"
                                     font.weight: Font.DemiBold
-                                    color: card.ok ? page.theme.primary : page.theme.amberInk
+                                    color: card.ok ? page.theme.primary
+                                        : card.optional ? page.theme.inkSoft
+                                        : page.theme.amberInk
                                     text: card.ok ? "✅ 已开启" : "❌ 未开启"
                                 }
                             }
 
                             AppText {
                                 width: parent.width
+                                visible: text !== ""
                                 theme: page.theme
                                 role: "label"
                                 color: page.theme.inkSoft
-                                text: card.modelData.why
+                                text: page.reasons[card.modelData.key] || ""
                                 wrapMode: Text.WordWrap
                             }
 
+                            // 已开启的也留一个入口：看护人想关掉或核对时不用自己去设置里找。
                             AppButton {
-                                visible: !card.ok && card.modelData.action !== ""
+                                visible: card.modelData.canOpenSettings === true
                                 width: parent.width
                                 height: page.theme.touch
                                 theme: page.theme
-                                text: "去开启"
-                                kind: "primary"
-                                onClicked: page.request(card.modelData.action)
+                                text: card.ok ? "去设置查看" : "去设置开启"
+                                kind: card.ok || card.optional ? "secondary" : "primary"
+                                onClicked: page.openSettings(card.modelData.key)
                             }
                         }
                     }

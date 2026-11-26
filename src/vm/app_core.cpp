@@ -599,6 +599,10 @@ void AppCore::rebuildTodayFrom(const QVariantList &source)
                 occ[QStringLiteral("state")] = it->value(QStringLiteral("state"));
                 occ[QStringLiteral("snoozeCount")] = it->value(QStringLiteral("snoozeCount"));
                 occ[QStringLiteral("snoozeUntilTs")] = it->value(QStringLiteral("snoozeUntilTs"));
+                // 升级链基线也要带过来：启动读库、改计划、同步拉取都走这里，
+                // 丢了 notifiedAtTs 就会从"现在"重新计时（被杀再打开又从 2 分钟倒数）。
+                occ[QStringLiteral("notifiedAtTs")] = it->value(QStringLiteral("notifiedAtTs"));
+                occ[QStringLiteral("escalationLevel")] = it->value(QStringLiteral("escalationLevel"));
             }
             m_occurrences.append(occ);
         }

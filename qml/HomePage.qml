@@ -21,17 +21,9 @@ Item {
     readonly property int planCount: PlanVM.plans.length
     readonly property bool hasPlans: planCount > 0
 
-    // 只在手机上提示：电脑版没有权限模型。这三项缺任何一项，提醒就可能不响或不亮屏。
-    readonly property int missingPermissions: {
-        if (Qt.platform.os !== "android")
-            return 0
-        var need = ["通知", "精确闹钟", "锁屏提醒"]
-        var n = 0
-        for (var i = 0; i < need.length; ++i)
-            if (DeviceVM.permissions.indexOf(need[i]) < 0)
-                ++n
-        return n
-    }
+    // 只在手机上提示：电脑版没有权限模型。口径和权限页一样（Fmt.missingPermissions）。
+    readonly property int missingPermissions: Qt.platform.os === "android"
+        ? Fmt.missingPermissions(DeviceVM.permissionDiagnostics) : 0
 
     ColumnLayout {
         anchors.fill: parent
@@ -147,6 +139,16 @@ Item {
                 spacing: page.theme.px(8)
                 topPadding: page.theme.px(4)
                 bottomPadding: page.theme.px(8)
+
+                // 暂停中要一眼看出来：老人以为"今天怎么不响了"时，这条就是答案。
+                NoticeBar {
+                    objectName: "pauseNotice"
+                    width: body.width
+                    visible: Stub.paused
+                    theme: page.theme
+                    message: "提醒已暂停到 " + Fmt.dayHourText(Stub.pausedUntilMs)
+                        + (Stub.pauseReal ? "" : "（预览，提醒仍会照常响）")
+                }
 
                 NoticeBar {
                     objectName: "permissionNotice"

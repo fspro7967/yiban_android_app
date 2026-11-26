@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Layouts
 
 // 统计：近 7 天 / 近 30 天切换；完成率、连续天数、漏做次数用超大数字；趋势用 Canvas 柱状图。
+// 下半页是喝水 / 睡眠 / 活动三条趋势（F1-6），数据从 Stub.trend 取，B1-1 接上后只改 Stub。
 Item {
     id: page
 
@@ -11,6 +12,42 @@ Item {
     property int rangeDays: 7
 
     readonly property var chartData: page.rangeDays === 7 ? RecordVM.stats7 : RecordVM.stats30
+
+    function hoursText(minutes) {
+        var h = Math.round(minutes / 6) / 10
+        return h === Math.floor(h) ? "" + h : h.toFixed(1)
+    }
+
+    // 三条趋势的展示配置：单位、柱顶数字怎么写、纵轴最大值、参考线。
+    readonly property var trendKinds: [
+        { kind: "water", title: "喝水", unit: "杯", floor: RecordVM.waterGoal, ref: RecordVM.waterGoal,
+          note: "浅色横线是每天目标 " + RecordVM.waterGoal + " 杯" },
+        { kind: "sleep", title: "睡眠", unit: "小时", floor: 480, ref: 0, note: "" },
+        { kind: "activity", title: "活动", unit: "分钟", floor: 60, ref: 0, note: "" }
+    ]
+
+    function trendValueText(kind, v) {
+        return kind === "sleep" ? page.hoursText(v) : "" + Math.round(v)
+    }
+
+    function trendSummary(cfg, series) {
+        var today = series.length > 0 ? series[series.length - 1].value : 0
+        var sum = 0
+        var days = 0
+        for (var i = 0; i < series.length; ++i) {
+            if (series[i].value > 0) {
+                sum += series[i].value
+                ++days
+            }
+        }
+        var text = "今天 " + page.trendValueText(cfg.kind, today) + " " + cfg.unit
+        if (days > 1) {
+            var avg = sum / days
+            text += " · 有记录的 " + days + " 天平均 "
+                + (cfg.kind === "sleep" ? page.hoursText(avg) : (Math.round(avg * 10) / 10)) + " " + cfg.unit
+        }
+        return text
+    }
 
     signal back()
 
@@ -296,6 +333,123 @@ Item {
                     color: page.theme.inkSoft
                     text: "漏做只提示“已错过，请咨询医生或家人”，不会自动建议补服。"
                     wrapMode: Text.WordWrap
+                }
+
+                AppText {
+                    width: list.width
+                    theme: page.theme
+                    role: "heading"
+                    text: "生活记录趋势"
+                }
+
+                AppText {
+                    width: list.width
+                    visible: !Stub.trendsReal
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: DeviceVM.demoMode
+                        ? "演示模式：过去几天是示例曲线，今天是真实记录。"
+                        : "历史记录还在接入，目前只显示今天的数。"
+                    wrapMode: Text.WordWrap
+                }
+
+                Repeater {
+                    model: page.trendKinds
+
+                    delegate: Rectangle {
+                        id: trendCard
+                        required property var modelData
+                        readonly property var series: Stub.trend(modelData.kind, page.rangeDays)
+                        readonly property real peak: {
+                            var m = 0
+                            for (var i = 0; i < series.length; ++i)
+                                m = Math.max(m, series[i].value)
+                            return m
+                        }
+                        readonly property bool empty: peak <= 0
+
+                        objectName: "trend_" + modelData.kind
+                        width: list.width
+                        height: trendColumn.implicitHeight + page.theme.gap * 1.5
+                        radius: page.theme.radius
+                        color: page.theme.surface
+                        border.width: 2
+                        border.color: page.theme.line
+
+                        Column {
+                            id: trendColumn
+                            width: parent.width - page.theme.gap * 2
+                            x: page.theme.gap
+                            y: page.theme.px(12)
+                            spacing: page.theme.gapSmall
+
+                            RowLayout {
+                                width: parent.width
+
+                                AppText {
+                                    theme: page.theme
+                                    role: "body"
+                                    font.weight: Font.DemiBold
+                                    text: trendCard.modelData.title
+                                }
+
+                                Item { Layout.fillWidth: true }
+
+                                AppText {
+                                    theme: page.theme
+                                    role: "label"
+                                    color: page.theme.inkSoft
+                                    text: "单位：" + trendCard.modelData.unit
+                                }
+                            }
+
+                            AppText {
+                                width: parent.width
+                                visible: !trendCard.empty
+                                theme: page.theme
+                                role: "label"
+                                color: page.theme.primaryInk
+                                text: page.trendSummary(trendCard.modelData, trendCard.series)
+                                wrapMode: Text.WordWrap
+                            }
+
+                            BarChart {
+                                visible: !trendCard.empty
+                                width: parent.width
+                                height: page.theme.px(180)
+                                theme: page.theme
+                                values: trendCard.series
+                                valueKey: "value"
+                                // 留一成余量：目标线和最高的柱子不贴着图顶
+                                maxValue: Math.max(trendCard.modelData.floor, trendCard.peak) * 1.1
+                                refValue: trendCard.modelData.ref
+                                formatValue: function (v) { return page.trendValueText(trendCard.modelData.kind, v) }
+                            }
+
+                            AppText {
+                                width: parent.width
+                                visible: !trendCard.empty && trendCard.modelData.note !== ""
+                                theme: page.theme
+                                role: "label"
+                                color: page.theme.inkSoft
+                                text: trendCard.modelData.note
+                                wrapMode: Text.WordWrap
+                            }
+
+                            AppText {
+                                width: parent.width
+                                visible: trendCard.empty
+                                topPadding: page.theme.gapSmall
+                                bottomPadding: page.theme.gapSmall
+                                theme: page.theme
+                                role: "body"
+                                color: page.theme.inkSoft
+                                horizontalAlignment: Text.AlignHCenter
+                                text: "暂无记录"
+                            }
+                        }
+                    }
                 }
             }
         }

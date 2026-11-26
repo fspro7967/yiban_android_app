@@ -291,6 +291,26 @@ ApplicationWindow {
         }
     }
 
+    // App 被杀（force-stop、系统回收）再打开时，已经弹过、还在等确认的提醒不会再发 reminderDue。
+    // 启动后把它重新盖上来；倒计时读 AppCore 记下的 notifiedAtTs，从剩余时间接着走，不从头算。
+    function resumePendingReminder() {
+        if (reminderScreen.active || callScreen.active)
+            return
+        var list = ReminderVM.today
+        for (var i = 0; i < list.length; ++i) {
+            if (list[i].state === "notified") {
+                reminderScreen.open(list[i])
+                return
+            }
+        }
+    }
+
+    Timer {
+        interval: 800
+        running: true
+        onTriggered: window.resumePendingReminder()
+    }
+
     Connections {
         target: PlanVM
 
