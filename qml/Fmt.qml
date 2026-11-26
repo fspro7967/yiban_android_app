@@ -154,6 +154,29 @@ QtObject {
         return "最近 " + days + " 天完成率 " + rate + "%，漏了 " + missed + " 次提醒。"
     }
 
+    // 权限缺项计数（I3 permissionDiagnostics）：首页提示条和权限页都用这一个函数，两处数字一致。
+    // 可选项（只有语音助手用的麦克风）没开不算缺，不在首页催老人。
+    function optionalPermission(key) {
+        return key === "microphone"
+    }
+
+    function missingPermissions(list) {
+        var n = 0
+        for (var i = 0; list && i < list.length; ++i)
+            if (list[i].granted !== true && !optionalPermission(list[i].key))
+                ++n
+        return n
+    }
+
+    // 毫秒时间戳 → "12月1日 8点" / "12月1日 8:30"（暂停提醒的到期时间）
+    function dayHourText(ts) {
+        if (!ts)
+            return ""
+        var d = new Date(Number(ts))
+        var clock = d.getMinutes() === 0 ? d.getHours() + "点" : d.getHours() + ":" + pad2(d.getMinutes())
+        return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + clock
+    }
+
     property Timer clock: Timer {
         interval: 1000
         running: true

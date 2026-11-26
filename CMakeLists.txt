@@ -192,9 +192,9 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         set_source_files_properties("${_qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${_qml_name}")
     endforeach()
 
-    # qml/Fmt.qml、Undo.qml、Notify.qml 是 pragma Singleton 页面工具；
+    # qml/Fmt.qml、Undo.qml、Notify.qml、Stub.qml 是 pragma Singleton 页面工具；
     # 文件经 GLOB 加入时自动扫描不生效，需要显式标记，否则 qmldir 里会当成普通组件。
-    foreach(_singleton Fmt Undo Notify)
+    foreach(_singleton Fmt Undo Notify Stub)
         set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/qml/${_singleton}.qml"
                                     PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
     endforeach()

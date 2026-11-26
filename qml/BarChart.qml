@@ -4,11 +4,19 @@ import QtQuick
 
 // 纯 Canvas 柱状图（按路线图 D16：不用 GPL 的 Qt Charts）。
 // 7 天显示数值；30 天只显示起点/每 5 天/今天，避免拥挤。
+// 默认画完成率（values[i].rate，0–100）；趋势图改 valueKey/maxValue/refValue 画杯数、分钟等。
 Canvas {
     id: chart
 
     property Theme theme
     property var values: []
+    property string valueKey: "rate"
+    property real maxValue: 100
+    property real refValue: maxValue / 2      // 参考虚线（完成率 50%、喝水目标 8 杯…）；<=0 不画
+    property var formatValue: function (v) { return "" + Math.round(v) }
+
+    onMaxValueChanged: requestPaint()
+    onRefValueChanged: requestPaint()
 
     onValuesChanged: requestPaint()
     onWidthChanged: requestPaint()
@@ -48,13 +56,18 @@ Canvas {
         if (barW > maxBarW)
             barW = maxBarW
 
-        // 50% 参考线
-        ctx.strokeStyle = "#E8DCC8"
-        ctx.lineWidth = 1
-        ctx.beginPath()
-        ctx.moveTo(padLeft, top + h * 0.5)
-        ctx.lineTo(padLeft + w, top + h * 0.5)
-        ctx.stroke()
+        var maxV = maxValue > 0 ? maxValue : 1
+
+        // 参考线
+        if (refValue > 0 && refValue <= maxV) {
+            var refY = top + h * (1 - refValue / maxV)
+            ctx.strokeStyle = "#E8DCC8"
+            ctx.lineWidth = 1
+            ctx.beginPath()
+            ctx.moveTo(padLeft, refY)
+            ctx.lineTo(padLeft + w, refY)
+            ctx.stroke()
+        }
 
         // 基线
         ctx.strokeStyle = theme.line
@@ -68,8 +81,9 @@ Canvas {
         var labelSize = Math.max(12, Math.round(theme.fontChip * 0.82))
 
         for (var i = 0; i < n; ++i) {
-            var rate = Math.max(0, Math.min(100, values[i].rate))
-            var barH = Math.max(2, h * rate / 100)
+            var raw = Number(values[i][valueKey]) || 0
+            var v = Math.max(0, Math.min(maxV, raw))
+            var barH = Math.max(2, h * v / maxV)
             var x = padLeft + i * (barW + gap)
             var y = top + h - barH
             var radius = Math.min(theme.px(5), barW / 2, barH / 2)
@@ -90,7 +104,7 @@ Canvas {
                 ctx.font = "600 " + valueSize + "px '" + theme.fontFamily + "'"
                 ctx.textAlign = "center"
                 ctx.textBaseline = "bottom"
-                ctx.fillText("" + Math.round(rate), x + barW / 2, y - theme.px(4))
+                ctx.fillText(formatValue(raw), x + barW / 2, y - theme.px(4))
             }
 
             if (values[i].label !== "") {
