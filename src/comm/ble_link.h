@@ -24,6 +24,12 @@ inline constexpr const char *kTxCharUuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e
 // 15 秒收不到就按掉线降级（按缓存继续亮灯，角上亮灰点）。
 inline constexpr const char *kHeartbeatTopic = "home/host/heartbeat";
 inline constexpr int kHeartbeatIntervalMs = 5000;
+// 提醒下发：topic 后缀是板子的 device id；payload {occurrence_id,title,state,light_color,due_ts}。
+// 板子上报：home/ack/<device> {occurrence_id,action,ts}；home/alarm {level,occurrence_id,ts}。
+inline constexpr const char *kReminderTopicPrefix = "home/reminder/";
+inline constexpr const char *kAckTopicPrefix = "home/ack/";
+inline constexpr const char *kAlarmTopic = "home/alarm";
+inline constexpr const char *kPresenceTopic = "home/sensor/presence";
 } // namespace BoardLinkProtocol
 
 // DeviceLink 的 BLE 实现：手机（或笔记本、树莓派）做中心设备，去连外设板的串口透传服务。

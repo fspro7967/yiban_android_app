@@ -65,6 +65,20 @@ public:
     quint64 deleteJson(const QString &path) override
     {
         const quint64 id = ++nextId;
+        if (path.startsWith(QLatin1String("/records/"))) {
+            recordDeletes.append(path);
+            const int status = recordDeleteStatus;
+            if (status == 200) {
+                emit reply(id, 200, QJsonObject {
+                    { QLatin1String("record_id"), path.section(QLatin1Char('/'), -1).toLongLong() },
+                    { QLatin1String("deleted"), true },
+                    { QLatin1String("server_seq"), 700 },
+                });
+            } else {
+                emit reply(id, status, QJsonObject {});
+            }
+            return id;
+        }
         deletes.append(path);
         answerPlan(id, path, QByteArray("DELETE"));
         return id;
@@ -129,6 +143,8 @@ public:
     QVector<QPair<QString, QJsonObject>> posts;
     QVector<QPair<QString, QJsonObject>> patches;
     QStringList deletes;
+    QStringList recordDeletes;       // DELETE /records/{id}（与计划删除分开计）
+    int recordDeleteStatus = 200;
     int plansStatus = 200;   // /plans 写接口
     qint64 serverPlanId = 30;
     QHash<qint64, qint64> planVersions;
@@ -240,6 +256,10 @@ private slots:
     void patch404ReuploadsRecord();
     void missingRecordsRouteKeepsQueue();
     void failedRecordUploadStaysPending();
+    void removedUploadedRecordSendsDelete();
+    void removedLocalRecordSendsNothing();
+    void recordDelete404TreatedAsSuccess();
+    void recordDeleteQueuedWhileOffline();
     void pendingCountRefreshesWhileOffline();
     void reconnectFlushesQueue();
     void reconnectSkipsBackoff();
@@ -997,6 +1017,92 @@ void TestSync::failedRecordUploadStaysPending()
     flushAll();
     QCOMPARE(vm->pendingCount(), 1); // 网络失败：留在队列里等退避重传
     QCOMPARE(countPosts(client, QStringLiteral("/records")), 1); // 退避中，不连发
+    delete vm;
+}
+
+void TestSync::removedUploadedRecordSendsDelete()
+{
+    // 已上传记录撤销：POST 上传 → 本地删 → 墓碑 → DELETE /records/{id}
+    AppCore::instance()->resetStorage();
+    AppCore *core = AppCore::instance();
+    const qint64 rid = core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+    vm->retrySync();
+    flushAll();
+    QCOMPARE(vm->pendingCount(), 0);
+    QCOMPARE(recordById(rid).value(QStringLiteral("serverRecordId")).toLongLong(), 501);
+
+    QVERIFY(core->removeRecord(rid));
+    QCOMPARE(core->pendingDeleteRecordCount(), 1);
+    flushAll();
+    QCOMPARE(client->recordDeletes, QStringList { QStringLiteral("/records/501") });
+    QCOMPARE(core->pendingDeleteRecordCount(), 0);
+    QCOMPARE(vm->pendingCount(), 0);
+    delete vm;
+}
+
+void TestSync::removedLocalRecordSendsNothing()
+{
+    // 没上传过的记录撤销：只删本地，不发 DELETE
+    AppCore::instance()->resetStorage();
+    AppCore *core = AppCore::instance();
+    const qint64 rid = core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+    QVERIFY(core->removeRecord(rid));
+    flushAll();
+    QVERIFY(client->recordDeletes.isEmpty());
+    QCOMPARE(core->pendingDeleteRecordCount(), 0);
+    delete vm;
+}
+
+void TestSync::recordDelete404TreatedAsSuccess()
+{
+    // 云组 C-4：删不存在的记录回 404，端上当成功，墓碑不再重试
+    AppCore::instance()->resetStorage();
+    AppCore *core = AppCore::instance();
+    const qint64 rid = core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+    vm->retrySync();
+    flushAll();
+    client->recordDeleteStatus = 404;
+    QVERIFY(core->removeRecord(rid));
+    flushAll();
+    QCOMPARE(client->recordDeletes.size(), 1);
+    QCOMPARE(core->pendingDeleteRecordCount(), 0); // 404 视为已删，清墓碑
+    QCOMPARE(vm->syncState(), QStringLiteral("idle"));
+    delete vm;
+}
+
+void TestSync::recordDeleteQueuedWhileOffline()
+{
+    // 断网时撤销：墓碑留队；恢复联网后自动补发 DELETE
+    AppCore::instance()->resetStorage();
+    AppCore *core = AppCore::instance();
+    const qint64 rid = core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+    vm->retrySync();
+    flushAll();
+
+    client->online = false;
+    QVERIFY(core->removeRecord(rid));
+    flushAll();
+    QCOMPARE(core->pendingDeleteRecordCount(), 1);
+    QCOMPARE(vm->pendingCount(), 1);
+    QVERIFY(client->recordDeletes.isEmpty());
+
+    client->online = true;
+    vm->retrySync();
+    flushAll();
+    QCOMPARE(client->recordDeletes, QStringList { QStringLiteral("/records/501") });
+    QCOMPARE(core->pendingDeleteRecordCount(), 0);
     delete vm;
 }
 

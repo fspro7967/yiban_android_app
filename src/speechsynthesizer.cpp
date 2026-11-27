@@ -2,6 +2,7 @@
 
 #include <QDebug>
 #include <QDir>
+#include <QSettings>
 #include <QFileInfo>
 #include <QTimer>
 #include <QtConcurrent>
@@ -360,7 +361,15 @@ void SpeechSynthesizer::generateInWorker(SpeechSynthesizer *self, QString senten
     if (self->m_tts && generationId > self->m_cancelUpTo.load()) {
         SherpaOnnxGenerationConfig cfg;
         std::memset(&cfg, 0, sizeof(cfg));
-        cfg.speed = 1.0f;
+        // B2-7：语速从持久化设置读（0.75/0.9/1.1 三档）。sherpa 的 speed 是倍率，
+        // 直接用端上语义；读不到时用 1.0（模型默认）。重排闹钟会重新渲染 WAV，
+        // 所以改语速后下一条提醒立即生效。
+        {
+            QSettings settings;
+            bool ok = false;
+            const double rate = settings.value(QStringLiteral("voice/rate"), 0.9).toDouble(&ok);
+            cfg.speed = static_cast<float>(ok ? qBound(0.5, rate, 2.0) : 1.0);
+        }
         cfg.silence_scale = 0.2f;   // 句间停顿，逐句播放时衔接更自然
         cfg.sid = 0;                // 本模型 174 个发音人，固定用第 0 个
 

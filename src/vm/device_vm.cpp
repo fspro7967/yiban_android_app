@@ -1,6 +1,7 @@
 #include "device_vm.h"
 
 #include "app_core.h"
+#include "board_vm.h"
 #include "connection_probe.h"
 #include "app_settings.h"
 #include "facade_errors.h"
@@ -50,6 +51,11 @@ DeviceVM::DeviceVM(QObject *parent)
     AppSettings *settings = AppSettings::instance();
     m_voiceEnabled = settings->voiceEnabled();
     m_nightQuiet = settings->nightQuiet();
+    m_speechRate = settings->speechRate();
+    m_speechPitch = settings->speechPitch();
+    // TTS 可能在 Java 侧先初始化（闹钟服务），这里把持久化的语速/音调同步下去。
+    Platform::setSpeechRate(m_speechRate);
+    Platform::setSpeechPitch(m_speechPitch);
     m_paired = settings->paired();
     m_role = settings->role();
     m_serverUrl = settings->serverUrl();
@@ -83,7 +89,7 @@ DeviceVM::DeviceVM(QObject *parent)
         });
         if (!m_tts->availableEngines().isEmpty()) {
             m_tts->setLocale(QLocale(QLocale::Chinese, QLocale::China));
-            m_tts->setRate(-0.15);
+            m_tts->setRate(m_speechRate - 1.0); // B2-7：0.9 → -0.1，与 Android 倍率对齐
         }
     }
 
@@ -104,6 +110,16 @@ DeviceVM::DeviceVM(QObject *parent)
             [this] { QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms); });
     connect(core, &AppCore::plansChanged, this,
             [this] { QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms); });
+    // X-1（方案 B）：升级链由 B2 的 DeviceVM 订阅，不依赖提醒页是否打开。
+    // AppCore::advanceEscalation 只在等级真正变化时 emit，escalate(id) 本身不再 emit，
+    // 因此这里只认 level==3 且只调用一次 sos(3)；QML 按约定不调，避免拨两次。
+    connect(core, &AppCore::escalationChanged, this, [this](qint64, int level) {
+        if (level == 3)
+            QTimer::singleShot(0, this, [this] { sos(3); });
+    });
+    // B2-6：板子呼救键和手动 SOS 走同一条路径（拨号/短信/云端 escalate）。
+    connect(BoardVM::instance(), &BoardVM::boardSosRequested, this,
+            [this] { sos(1); });
 
     m_permissionCache = Platform::grantedLabels();
     m_permissionDiagnostics = Platform::permissionDiagnostics();
@@ -240,6 +256,50 @@ void DeviceVM::setVoiceEnabled(bool on)
     emit voiceChanged();
     // 已经排进系统的闹钟还带着旧的"要不要播报"标记，重排一遍才生效
     QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
+}
+
+void DeviceVM::setSpeechRate(double rate)
+{
+    if (rate < 0.5 || rate > 2.0 || qFuzzyCompare(m_speechRate, rate))
+        return;
+    m_speechRate = rate;
+    AppSettings::instance()->setSpeechRate(rate);
+    Platform::setSpeechRate(rate); // Android 已初始化的 TTS 立即变速
+    if (m_tts)
+        m_tts->setRate(rate - 1.0); // 桌面 QTextToSpeech 的 rate 是 -1.0~1.0
+    AppCore::instance()->logOperation(QStringLiteral("设置"),
+                                      QStringLiteral("播报语速改为 %1").arg(rate));
+    emit voiceChanged();
+    // 到点播报走预渲染的离线 WAV，语速变了要重新渲染才能"下一条立即生效"。
+    QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
+}
+
+void DeviceVM::setSpeechPitch(double pitch)
+{
+    if (pitch < 0.5 || pitch > 2.0 || qFuzzyCompare(m_speechPitch, pitch))
+        return;
+    m_speechPitch = pitch;
+    AppSettings::instance()->setSpeechPitch(pitch);
+    Platform::setSpeechPitch(pitch);
+    AppCore::instance()->logOperation(QStringLiteral("设置"),
+                                      QStringLiteral("播报音调改为 %1").arg(pitch));
+    emit voiceChanged();
+    QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
+}
+
+QStringList DeviceVM::chineseVoices() const
+{
+    return Platform::chineseVoices();
+}
+
+bool DeviceVM::deviceOwner() const
+{
+    return Platform::isDeviceOwner();
+}
+
+bool DeviceVM::chineseVoiceMissing() const
+{
+    return Platform::chineseVoiceMissing();
 }
 
 void DeviceVM::setNightQuiet(bool on)

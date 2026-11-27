@@ -35,8 +35,16 @@ class DeviceVM : public QObject
     // I3：逐项权限诊断 {key,label,granted,canOpenSettings}，F1 权限页直接当 model。
     Q_PROPERTY(QVariantList permissionDiagnostics READ permissionDiagnostics NOTIFY permissionChanged)
     Q_PROPERTY(bool kioskActive READ kioskActive NOTIFY kioskChanged)
+    // B2-4：是不是 device owner（false 时 kiosk 退化为系统"屏幕固定"）。
+    Q_PROPERTY(bool deviceOwner READ deviceOwner NOTIFY kioskChanged)
     Q_PROPERTY(bool voiceEnabled READ voiceEnabled WRITE setVoiceEnabled NOTIFY voiceChanged)
     Q_PROPERTY(bool nightQuiet READ nightQuiet WRITE setNightQuiet NOTIFY voiceChanged)
+    // B2-7：播报语速/音调，改后下一条提醒立即生效且重启保留。
+    Q_PROPERTY(double speechRate READ speechRate WRITE setSpeechRate NOTIFY voiceChanged)
+    Q_PROPERTY(double speechPitch READ speechPitch WRITE setSpeechPitch NOTIFY voiceChanged)
+    // 离线中文发音人；空列表 + chineseVoiceMissing=true 时提示用户装中文 TTS 引擎。
+    Q_PROPERTY(QStringList chineseVoices READ chineseVoices NOTIFY voiceChanged)
+    Q_PROPERTY(bool chineseVoiceMissing READ chineseVoiceMissing NOTIFY voiceChanged)
     // 夜间安静此刻是否生效（开关打开且处于 22:00–07:00），设置页和提醒页据此提示。
     Q_PROPERTY(bool nightQuietActive READ nightQuietNow NOTIFY voiceChanged)
     Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY networkChanged)
@@ -65,11 +73,18 @@ public:
     QStringList permissions() const;
     QVariantList permissionDiagnostics() const { return m_permissionDiagnostics; }
     bool kioskActive() const { return m_kioskActive; }
+    bool deviceOwner() const;
     bool voiceEnabled() const { return m_voiceEnabled; }
     void setVoiceEnabled(bool on);
     bool nightQuiet() const { return m_nightQuiet; }
     void setNightQuiet(bool on);
     bool nightQuietNow() const;
+    double speechRate() const { return m_speechRate; }
+    void setSpeechRate(double rate);
+    double speechPitch() const { return m_speechPitch; }
+    void setSpeechPitch(double pitch);
+    QStringList chineseVoices() const;
+    bool chineseVoiceMissing() const;
 
     QString serverUrl() const { return m_serverUrl; }
     QString networkStatus() const;
@@ -163,6 +178,8 @@ private:
     bool m_kioskActive = false;
     bool m_voiceEnabled = true;
     bool m_nightQuiet = true;
+    double m_speechRate = 0.9;
+    double m_speechPitch = 1.0;
     bool m_warnedExactAlarm = false;
     bool m_warnedFullScreen = false;
     bool m_speaking = false;

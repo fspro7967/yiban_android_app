@@ -53,6 +53,10 @@ public final class YibanPlatform {
     private static Runnable sTtsPendingDone;
     /** 最近一次开口的时刻（elapsedRealtime），用于去重：服务念过界面就不再念一遍。 */
     private static volatile long sSpokenAt = 0L;
+    // B2-7：语速/音调由设置页持久化后下发；TTS 初始化晚于设置下发，所以存成静态字段。
+    private static volatile float sSpeechRate = 0.9f;
+    private static volatile float sSpeechPitch = 1.0f;
+    private static volatile boolean sChineseVoiceMissing = false;
 
     private YibanPlatform() {
     }
@@ -351,6 +355,52 @@ public final class YibanPlatform {
         sTtsPending = null;
     }
 
+    // ---- B2-7：语速 / 音调 / 中文发音人 ----
+
+    /** 设置语速。TTS 还没初始化时先记下来，ensureTts 回调里会应用。 */
+    public static void setSpeechRate(float rate) {
+        if (rate < 0.5f || rate > 2.0f) return;
+        sSpeechRate = rate;
+        if (sTts != null && sTtsReady) {
+            try { sTts.setSpeechRate(rate); } catch (Exception ignored) {}
+        }
+    }
+
+    /** 设置音调。 */
+    public static void setSpeechPitch(float pitch) {
+        if (pitch < 0.5f || pitch > 2.0f) return;
+        sSpeechPitch = pitch;
+        if (sTts != null && sTtsReady) {
+            try { sTts.setPitch(pitch); } catch (Exception ignored) {}
+        }
+    }
+
+    /** 已安装的离线中文发音人，逗号分隔（C++ 侧 split(',')）。 */
+    public static String chineseVoices(Context ctx) {
+        ensureTts(ctx);
+        if (sTts == null || !sTtsReady) return "";
+        StringBuilder out = new StringBuilder();
+        try {
+            for (android.speech.tts.Voice v : sTts.getVoices()) {
+                if (v == null || v.getLocale() == null) continue;
+                String lang = v.getLocale().getLanguage();
+                if (!"zh".equalsIgnoreCase(lang)) continue;
+                if (!v.isNetworkConnectionRequired()) { // 只要离线可用的
+                    if (out.length() > 0) out.append(',');
+                    out.append(v.getName());
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out.toString();
+    }
+
+    /** setLanguage(Locale.CHINA) 是否失败过（没有中文离线引擎时提示用户）。 */
+    public static boolean chineseVoiceMissing(Context ctx) {
+        ensureTts(ctx);
+        return sChineseVoiceMissing;
+    }
+
     private static synchronized void ensureTts(Context ctx) {
         if (sTts != null) {
             return;
@@ -366,10 +416,13 @@ public final class YibanPlatform {
                     int result = sTts.setLanguage(Locale.CHINA);
                     if (result == TextToSpeech.LANG_MISSING_DATA
                             || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        sChineseVoiceMissing = true;
                         sTts.setLanguage(Locale.getDefault());
+                    } else {
+                        sChineseVoiceMissing = false;
                     }
-                    sTts.setSpeechRate(0.9f);
-                    sTts.setPitch(1.0f);
+                    sTts.setSpeechRate(sSpeechRate);
+                    sTts.setPitch(sSpeechPitch);
                 } catch (Exception ignored) {
                 }
                 sTtsReady = true;
@@ -768,7 +821,40 @@ public final class YibanPlatform {
         return sb.toString();
     }
 
+    // ---------------------------------------------------------------- 灯板连接前台服务（B2-2）
+
+    /** 连上灯板时保活：起一个 connectedDevice 前台服务，灭屏也不断 5 秒心跳。 */
+    public static void startConnectionService(Context ctx) {
+        try {
+            Intent service = new Intent(ctx, ConnectionService.class);
+            service.setAction(ConnectionService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(service);
+            } else {
+                ctx.startService(service);
+            }
+        } catch (Throwable t) {
+            Log.w("YibanPlatform", "启动灯板连接服务失败", t);
+        }
+    }
+
+    /** 断开灯板时停服务，通知随之消失。 */
+    public static void stopConnectionService(Context ctx) {
+        try {
+            Intent service = new Intent(ctx, ConnectionService.class);
+            service.setAction(ConnectionService.ACTION_STOP);
+            ctx.startService(service);
+        } catch (Throwable t) {
+            Log.w("YibanPlatform", "停止灯板连接服务失败", t);
+        }
+    }
+
     // ---------------------------------------------------------------- 老人机模式
+
+    /** device owner 判定：不是 owner 时 startLockTask 会弹"屏幕固定"确认（安全降级）。 */
+    public static boolean isDeviceOwner(Context ctx) {
+        return AdminReceiver.isDeviceOwner(ctx);
+    }
 
     public static void startLockTask(Context ctx) {
         Activity activity = activity(ctx);
@@ -776,6 +862,8 @@ public final class YibanPlatform {
             return;
         }
         try {
+            // device owner：先把本应用加进 lock-task 白名单，再锁定就不弹确认。
+            AdminReceiver.allowLockTask(activity);
             activity.startLockTask();
         } catch (Exception ignored) {
             // 没有设备管理员时系统会先弹"屏幕固定"确认，用户取消即失败；

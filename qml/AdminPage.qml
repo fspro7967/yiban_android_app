@@ -406,7 +406,7 @@ Item {
                                 text: modelData.label
                                 kind: "secondary"
                                 selected: Math.abs(Stub.speechRate - modelData.rate) < 0.01
-                                onClicked: Stub.speechRate = modelData.rate
+                                onClicked: DeviceVM.setSpeechRate(modelData.rate)
                             }
                         }
 
@@ -421,11 +421,11 @@ Item {
 
                         AppText {
                             width: parent.width
-                            visible: !Stub.speechRateReal
+                            visible: DeviceVM.chineseVoiceMissing
                             theme: page.theme
                             role: "label"
                             color: page.theme.danger
-                            text: "语速调整还在接入：现在试听仍是默认语速。"
+                            text: "没找到中文离线语音引擎：请到系统「文字转语音」里装一个中文引擎，否则播报可能读不出中文。"
                             wrapMode: Text.WordWrap
                         }
                     }

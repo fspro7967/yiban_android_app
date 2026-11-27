@@ -12,6 +12,8 @@ constexpr auto kPaired = "net/paired";
 constexpr auto kRole = "net/role";
 constexpr auto kVoice = "voice/enabled";
 constexpr auto kNightQuiet = "voice/nightQuiet";
+constexpr auto kSpeechRate = "voice/rate";
+constexpr auto kSpeechPitch = "voice/pitch";
 constexpr auto kLastSync = "sync/lastSyncTs";
 constexpr auto kStateSeq = "sync/stateSeq";
 constexpr auto kPlansSeq = "sync/plansSeq";
@@ -51,6 +53,14 @@ bool AppSettings::readBool(const QString &key, bool fallback) const
 {
     const QSettings s;
     return s.value(key, fallback).toBool();
+}
+
+double AppSettings::readDouble(const QString &key, double fallback) const
+{
+    const QSettings s;
+    bool ok = false;
+    const double v = s.value(key, fallback).toDouble(&ok);
+    return ok ? v : fallback;
 }
 
 void AppSettings::write(const QString &key, const QVariant &value) const
@@ -134,6 +144,32 @@ bool AppSettings::nightQuiet() const
 void AppSettings::setNightQuiet(bool on)
 {
     write(kNightQuiet, on);
+}
+
+double AppSettings::speechRate() const
+{
+    const double rate = readDouble(kSpeechRate, 0.9);
+    return rate >= 0.5 && rate <= 2.0 ? rate : 0.9; // 越界值当没设过
+}
+
+void AppSettings::setSpeechRate(double rate)
+{
+    if (rate < 0.5 || rate > 2.0)
+        return;
+    write(kSpeechRate, rate);
+}
+
+double AppSettings::speechPitch() const
+{
+    const double pitch = readDouble(kSpeechPitch, 1.0);
+    return pitch >= 0.5 && pitch <= 2.0 ? pitch : 1.0;
+}
+
+void AppSettings::setSpeechPitch(double pitch)
+{
+    if (pitch < 0.5 || pitch > 2.0)
+        return;
+    write(kSpeechPitch, pitch);
 }
 
 qint64 AppSettings::lastSyncTs() const

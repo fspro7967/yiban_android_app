@@ -144,6 +144,9 @@ SyncVM::SyncVM(QObject *parent)
             Qt::QueuedConnection);
     connect(core, &AppCore::recordsChanged, this, &SyncVM::uploadRecords,
             Qt::QueuedConnection);
+    // 撤销记录会发 recordsChanged（墓碑入队/清掉）：DELETE 也跟着冲一次。
+    connect(core, &AppCore::recordsChanged, this, &SyncVM::uploadRecordDeletes,
+            Qt::QueuedConnection);
     connect(core, &AppCore::plansChanged, this, &SyncVM::uploadPlans,
             Qt::QueuedConnection);
     connect(core, &AppCore::plansChanged, this, &SyncVM::syncChanged);
@@ -210,6 +213,8 @@ void SyncVM::heartbeat()
         uploadPending();
     if (!m_recordBackoff.isActive())
         uploadRecords();
+    if (!m_recordBackoff.isActive())
+        uploadRecordDeletes();
     pullState();
 }
 
@@ -217,7 +222,8 @@ QString SyncVM::computeState() const
 {
     if (!canSync())
         return QStringLiteral("offline");
-    if (m_uploadReq || m_alarmReq || m_recordReq || m_planReq || m_stateReq || m_plansReq)
+    if (m_uploadReq || m_alarmReq || m_recordReq || m_recordDeleteReq
+        || m_planReq || m_stateReq || m_plansReq)
         return QStringLiteral("syncing");
     if (m_failed)
         return QStringLiteral("error");
@@ -238,6 +244,7 @@ int SyncVM::pendingCount() const
 {
     return AppCore::instance()->pendingEvents().size()
         + AppCore::instance()->pendingRecordCount()
+        + AppCore::instance()->pendingDeleteRecordCount()
         + AppCore::instance()->pendingPlanCount();
 }
 
@@ -280,6 +287,7 @@ void SyncVM::cycle()
     uploadPlans(); // 计划先走：新计划换号后，挂在它上面的事件才能传
     uploadPending();
     uploadRecords();
+    uploadRecordDeletes();
     pullState();
     pullPlans(true); // 手动同步/重连：拉全量对账，云端删掉的计划这里能发现
 }
@@ -348,6 +356,52 @@ void SyncVM::uploadRecords()
                             recordToServer(rec, true))
         : m_http->postJson(QStringLiteral("/records"), recordToServer(rec, false));
     emit syncChanged();
+}
+
+void SyncVM::uploadRecordDeletes()
+{
+    if (m_recordDeleteReq || m_recordReq || !canSync())
+        return;
+    const QVariantList pending = AppCore::instance()->pendingRecordDeletes();
+    if (pending.isEmpty())
+        return;
+    const QVariantMap item = pending.first().toMap();
+    m_recordDeleteId = item.value(QStringLiteral("recordId")).toLongLong();
+    const qint64 serverId = item.value(QStringLiteral("serverRecordId")).toLongLong();
+    if (serverId <= 0) {
+        // 脏墓碑（不该出现）：直接清掉，别卡住队列
+        AppCore::instance()->markRecordDeleted(m_recordDeleteId);
+        m_recordDeleteId = 0;
+        return;
+    }
+    m_recordDeleteReq = m_http->deleteJson(QStringLiteral("/records/%1").arg(serverId));
+    emit syncChanged();
+}
+
+void SyncVM::onRecordDeleteReply(int status, const QJsonObject &body)
+{
+    Q_UNUSED(body)
+    const qint64 localId = m_recordDeleteId;
+    m_recordDeleteReq = 0;
+    m_recordDeleteId = 0;
+
+    if ((status >= 200 && status < 300) || status == 404) {
+        // 2xx 已删；404 服务端本来就没有这条，同样当成功（云组 C-4 契约）
+        AppCore::instance()->markRecordDeleted(localId);
+        m_recordBackoffMs = 0;
+        noteSuccess();
+    } else if (status == 401) {
+        onUnauthorized();
+        emit syncChanged();
+        return;
+    } else {
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
+    emit syncChanged();
+    uploadRecordDeletes(); // 本地墓碑已更新，接着删下一条
 }
 
 void SyncVM::uploadPlans()
@@ -522,6 +576,7 @@ void SyncVM::onRecordReply(int status, const QJsonObject &body)
     }
     emit syncChanged();
     uploadRecords(); // 本地状态已同步更新，直接接着传下一条
+    uploadRecordDeletes(); // 上传途中被撤销的会在这里补出墓碑，顺手发 DELETE
 }
 
 void SyncVM::scheduleUploadRetry()
@@ -546,6 +601,10 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
 
     if (requestId == m_recordReq) {
         onRecordReply(status, body);
+        return;
+    }
+    if (requestId != 0 && requestId == m_recordDeleteReq) {
+        onRecordDeleteReply(status, body);
         return;
     }
     if (requestId == m_planReq) {
@@ -715,6 +774,15 @@ void SyncVM::onFailed(quint64 requestId, const QString &code)
     if (requestId != 0 && requestId == m_recordReq) {
         m_recordReq = 0;
         m_recordLocalId = 0;
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
+    if (requestId != 0 && requestId == m_recordDeleteReq) {
+        // 网络失败：墓碑留在队列里，等退避/恢复联网后补发 DELETE
+        m_recordDeleteReq = 0;
+        m_recordDeleteId = 0;
         m_failed = true;
         scheduleRecordRetry();
         emit syncChanged();

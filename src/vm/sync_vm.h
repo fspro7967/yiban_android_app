@@ -62,6 +62,7 @@ private:
     void connectClient(HttpClient *client);
     void uploadPending();
     void uploadRecords();
+    void uploadRecordDeletes();        // 撤销记录墓碑：DELETE /records/{id}
     void uploadPlans();
     void pullState();
     // full = true 时 since=0 拉全量并对账（发现云端硬删除）；否则按游标增量。
@@ -73,6 +74,7 @@ private:
     void onPlanReply(int status, const QJsonObject &body);
     void onUnauthorized();                // 401：清令牌、退出配对，等用户重新配对
     void onRecordReply(int status, const QJsonObject &body);
+    void onRecordDeleteReply(int status, const QJsonObject &body);
     bool canSync() const;                 // 已配对 + 有服务器地址
     void onReply(quint64 requestId, int status, const QJsonObject &body);
     void onFailed(quint64 requestId, const QString &code);
@@ -95,6 +97,8 @@ private:
     qint64 m_recordLocalId = 0;           // 在途请求对应的本地 recordId
     qint64 m_recordRev = 0;               // 在途请求带上去的 syncRev
     bool m_recordIsPatch = false;
+    quint64 m_recordDeleteReq = 0;        // 在途记录删除请求（一次只删一条）
+    qint64 m_recordDeleteId = 0;          // 在途删除对应的本地 recordId（墓碑键）
     quint64 m_planReq = 0;                // 在途计划请求（一次只传一条）
     qint64 m_planId = 0;                  // 在途请求对应的本地 planId
     qint64 m_planRev = 0;                 // 在途请求带上去的 syncRev

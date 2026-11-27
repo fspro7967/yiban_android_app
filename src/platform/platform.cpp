@@ -322,6 +322,90 @@ bool wasSpokenRecently(int withinMs)
 #endif
 }
 
+void setSpeechRate(double rate)
+{
+#ifdef Q_OS_ANDROID
+    QJniObject::callStaticMethod<void>(kBridge, "setSpeechRate", "(F)V", jfloat(rate));
+#else
+    Q_UNUSED(rate)
+#endif
+}
+
+void setSpeechPitch(double pitch)
+{
+#ifdef Q_OS_ANDROID
+    QJniObject::callStaticMethod<void>(kBridge, "setSpeechPitch", "(F)V", jfloat(pitch));
+#else
+    Q_UNUSED(pitch)
+#endif
+}
+
+QStringList chineseVoices()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return {};
+    const QJniObject names = QJniObject::callStaticObjectMethod(
+        kBridge, "chineseVoices", "(Landroid/content/Context;)Ljava/lang/String;",
+        context.object());
+    if (!names.isValid())
+        return {};
+    return names.toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
+#else
+    return {};
+#endif
+}
+
+bool chineseVoiceMissing()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(
+        kBridge, "chineseVoiceMissing", "(Landroid/content/Context;)Z", context.object());
+#else
+    return false;
+#endif
+}
+
+void startConnectionService()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return;
+    QJniObject::callStaticMethod<void>(kBridge, "startConnectionService",
+                                       "(Landroid/content/Context;)V", context.object());
+#endif
+}
+
+void stopConnectionService()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return;
+    QJniObject::callStaticMethod<void>(kBridge, "stopConnectionService",
+                                       "(Landroid/content/Context;)V", context.object());
+#endif
+}
+
+bool isDeviceOwner()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(kBridge, "isDeviceOwner",
+                                                  "(Landroid/content/Context;)Z",
+                                                  context.object());
+#else
+    return false;
+#endif
+}
+
 QString diagnostics()
 {
 #ifdef Q_OS_ANDROID
