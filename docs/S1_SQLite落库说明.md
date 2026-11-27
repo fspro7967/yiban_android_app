@@ -200,3 +200,31 @@ events(event_id TEXT PRIMARY KEY, occurrence_id INTEGER, action TEXT, ts INTEGER
 
 完整 `ctest`：**9/9 通过**。
 
+### 9.4 2026-11-27 review 后的修复（10 条）
+
+review 指出暂停/趋势还有 9 个行为 bug + 1 个接入问题，已全部修掉并补了用例：
+
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| 1 | 暂停前已在响的提醒照样升级、记漏服 | `applyPauseWindow()` 也处理 `notified`：清 `escalationLevel`/`notifiedAtTs`；`advanceEscalation()` 遇 `paused` 直接返回 |
+| 2 | 首页"下一条"仍显示暂停中的提醒 | `currentOccurrence()` 跳过 `paused`；`publicOccurrence()` 输出 `paused` 且 `canConfirm/canSnooze=false` |
+| 3 | 缩短暂停后，后面的提醒永远不弹 | `applyPauseWindow()` 会对"落在新截止之后且还没到点"的条目**解除** `paused` |
+| 4 | 运行期到期不发信号、不清值 | `onTick()` 检测到期：清零 `pauseUntilMs`/`pauseStartMs`，发 `pausedChanged` 并落库；`resetStorage()` 也发 |
+| 5 | 暂停期间手动确认不算完成 | `confirm()` 清 `paused`；`snooze()` 在暂停中把 `snoozeUntilTs` 推到暂停结束后并清 `paused` |
+| 6 | 开启暂停会把暂停前欠着的提醒一并抹掉 | 新增 `m_pauseStartMs`（落库 `meta.pause_start_ms`），只标 `dueAt >= 起点的` |
+| 7 | 手动恢复没考虑有效窗口 | 改为 `dueAt + windowMin <= now` 才保持暂停（窗口还在就能继续提醒） |
+| 8 | 跨零点趋势不刷新 | `onTick()` 跨天分支补发 `recordsChanged()`（趋势属性挂在这个信号上） |
+| 9 | 睡眠配对可复用 start、无上限，会算出几十小时 | 改为按时间顺序**成对消费** start/end（每条 start 只用一次），并限制单次 ≤ 16 小时 |
+
+新增/扩充用例后：`pause_mode` 12 例、`trends` 6 例；完整 `ctest` 仍 **9/9 通过**。
+
+### 9.5 接入状态（第 10 条）
+
+数据层已就绪，但 **QML 侧还没接**：`qml/Stub.qml` 里 `pauseReal` / `trendsReal` 仍是 `false`，
+页面用的还是 Stub 的假数据。QML 归 F1，B1 不改；接法写在 `agent/接口冻结清单.md` A.4 末尾：
+
+- `trendsReal: true` → `trend(kind, days)` 转发 `RecordVM.trend(kind, days)`；
+- `pauseReal: true` → `paused` / `pauseUntilMs` / `pauseUntil(ms)` / `resume()` 转发 `ReminderVM` 同名成员。
+
+在 F1 接线之前，管理后台点暂停**不会**影响 C++ 侧的调度（Stub 只改自己的属性）。
+

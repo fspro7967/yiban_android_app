@@ -36,6 +36,9 @@ private slots:
     void sleepCrossesMidnight();
     void crossDayShiftsWindow();
     void newRecordUpdatesSeries();
+    // review 第 8、9 条
+    void dayRolloverRefreshesTrend();
+    void orphanSleepEndIsNotPaired();
 };
 
 void TrendsTest::init()
@@ -147,6 +150,41 @@ void TrendsTest::newRecordUpdatesSeries()
     const int after = core->recordTrend(QStringLiteral("water"), 7).last()
                           .toMap().value(QStringLiteral("value")).toInt();
     QCOMPARE(after, before + 2);
+}
+
+void TrendsTest::dayRolloverRefreshesTrend()
+{
+    AppCore *core = AppCore::instance();
+    QSignalSpy spy(core, &AppCore::recordsChanged);
+    core->setClockForTests(msAt(kToday.addDays(1), 9, 0));
+    core->tickForTests();
+
+    // 跨天必须补发 recordsChanged，否则统计页的"今天"会停在昨天
+    QVERIFY(spy.count() > 0);
+    QCOMPARE(core->recordTrend(QStringLiteral("water"), 7).last()
+                 .toMap().value(QStringLiteral("date")).toString(),
+             kToday.addDays(1).toString(Qt::ISODate));
+}
+
+void TrendsTest::orphanSleepEndIsNotPaired()
+{
+    AppCore *core = AppCore::instance();
+    // 第一天 22:00 入睡、第二天 06:00 起床 = 480 分钟
+    core->setClockForTests(msAt(kToday.addDays(-2), 22, 0));
+    core->tickForTests();
+    core->addRecord(QStringLiteral("sleep_start"), 0, QString());
+    core->setClockForTests(msAt(kToday.addDays(-1), 6, 0));
+    core->tickForTests();
+    core->addRecord(QStringLiteral("sleep_end"), 0, QString());
+
+    // 第三天只点了"起床"（忘了点入睡）：不能复用第一天那条 start 算出几十小时
+    core->setClockForTests(msAt(kToday, 7, 0));
+    core->tickForTests();
+    core->addRecord(QStringLiteral("sleep_end"), 0, QString());
+
+    const QVariantList trend = core->recordTrend(QStringLiteral("sleep"), 7);
+    QCOMPARE(trend.at(trend.size() - 2).toMap().value(QStringLiteral("value")).toInt(), 480);
+    QCOMPARE(trend.last().toMap().value(QStringLiteral("value")).toInt(), 0);
 }
 
 QTEST_GUILESS_MAIN(TrendsTest)

@@ -236,8 +236,9 @@ private:
     int advanceEscalation(int index);
     // 给发生记录补上升级等级与"下一级还有多少秒"（I2 对外字段）。
     QVariantMap withEscalationDeadline(QVariantMap occ) const;
-    // 暂停期内已到/将到点的 pending 提醒打上 paused 标记（不弹、不升级、不算漏服）。
-    void markPausedOccurrences();
+    // 暂停期内已到/将到点的待办提醒打 paused 标记（不弹、不升级、不算漏服）。
+    // 同时负责"缩短暂停"时把不该暂停的标记去掉。
+    void applyPauseWindow();
 
     // ---- 本地持久化（SQLite）----
     // 只落真实数据域的整份快照；演示域仍是内存快照（重启即重置，符合 README 的约定）。
@@ -254,6 +255,9 @@ private:
     qint64 m_clockOverrideMs = 0;
     // 暂停到什么时候（毫秒时间戳）；0 = 未暂停。落库到 meta，跨重启保留。
     qint64 m_pauseUntilMs = 0;
+    // 本次暂停从什么时候开始：只暂停"开始之后到点"的提醒，避免把暂停前
+    // 就欠着的 pending 一并抹成"已暂停"（否则当天完成率反而变高）。
+    qint64 m_pauseStartMs = 0;
     QString m_dbPath;
 
     int indexOfOccurrence(qint64 id) const;
