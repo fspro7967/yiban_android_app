@@ -60,6 +60,7 @@ private slots:
     void syncQueueLifecycle();
     void syncQueueIsIdempotent();
     void escalationChainAdvances();
+    void escalationSurvivesRebuild();
     void crossDayRolloverArchivesYesterday();
 };
 
@@ -181,6 +182,35 @@ void DataLayerTest::escalationChainAdvances()
     }
     QVERIFY(escalationEvent);
     QVERIFY(escalation.count() >= 3);
+}
+
+// 重建今天清单（启动读库、改计划、同步拉取都会走 rebuildTodayFrom）不能把升级链的基线丢掉：
+// 否则 App 被杀再打开，已经等了 1 分钟的提醒又从 2 分钟重新倒计时（真机 11/26 复现）。
+void DataLayerTest::escalationSurvivesRebuild()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = core->createPlan(planAt(QStringLiteral("测血压"), 9, 10));
+    QVERIFY(planId > 0);
+
+    core->setClockForTests(at(9, 10));
+    core->tickForTests();
+    QCOMPARE(todayFor(planId).value(QStringLiteral("state")).toString(), QStringLiteral("notified"));
+    const qint64 notifiedAt = todayFor(planId).value(QStringLiteral("notifiedAtTs")).toLongLong();
+    QVERIFY(notifiedAt > 0);
+
+    core->setClockForTests(at(9, 11));
+    core->tickForTests();
+    QVERIFY(core->createPlan(planAt(QStringLiteral("另一条"), 20, 0)) > 0); // 触发 rebuildToday
+    core->tickForTests();
+
+    const QVariantMap occ = todayFor(planId);
+    QCOMPARE(occ.value(QStringLiteral("notifiedAtTs")).toLongLong(), notifiedAt);
+    QCOMPARE(occ.value(QStringLiteral("escalationLevel")).toInt(), 1);
+    QCOMPARE(occ.value(QStringLiteral("nextEscalationInSec")).toInt(), 60);
+
+    core->setClockForTests(at(9, 12));
+    core->tickForTests();
+    QCOMPARE(todayFor(planId).value(QStringLiteral("escalationLevel")).toInt(), 2);
 }
 
 void DataLayerTest::crossDayRolloverArchivesYesterday()

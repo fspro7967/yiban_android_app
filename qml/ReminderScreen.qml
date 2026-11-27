@@ -4,7 +4,9 @@ import QtQuick
 import QtQuick.Layouts
 
 // 全屏到点提醒：事项名最大（要做什么比几点更重要），时间退为小一号的辅助信息；
-// 巨大确认键、10 分钟后备键；2 分钟未处理则通知家人。
+// 巨大确认键、10 分钟后备键。升级链（I2）由 AppCore 推进，这里只读等级和倒计时：
+// 1 级 = 已提醒，2 级 = 加强播报（2 分钟），3 级 = 已通知家人（plan.escalateAfterMin，默认 15 分钟）。
+// 三级时的拨号 / 短信归 X-1 决定的那一方，QML 不调 DeviceVM.sos(3)，否则会拨两次。
 Item {
     id: screen
 
@@ -13,10 +15,46 @@ Item {
     property var occ: null
 
     readonly property string caregiverLabel: ProfileVM.caregiverName.length > 0 ? ProfileVM.caregiverName : "家人"
-    property int escalationLeft: 120
-    property bool escalated: false
+
+    // 升级链状态：每次 occurrence 变化（等级变化、today 刷新）时从 ReminderVM 重新取一份，
+    // 倒计时只在本地按 ReminderVM.nowMs 往下走，不自己计时，也不自己触发升级。
+    property int level: 1
+    property double deadlineMs: 0      // 下一级的时刻；-1 表示不在升级链上（已升到 3 级）
+    property double levelStartMs: 0    // 当前这一级开始的时刻，用来算进度条
+    property double notifyFamilyMs: 0  // 升到 3 级（通知家人）的时刻
+    // 接口冻结清单 A.2：提醒弹出 2 分钟升 2 级。只用来画 2 级那段进度条的起点，
+    // 倒计时本身以 nextEscalationInSec 为准。
+    readonly property int voiceBoostSec: 120
+
+    readonly property bool escalated: level >= 3
+    // 不在升级链上但还没升到 3 级：比如已经过了有效期（missed，允许补做），不再倒计时。
+    readonly property bool inChain: !escalated && deadlineMs > 0
+    readonly property double nowMs: ReminderVM.nowMs
+    // 显示用的截止时刻：对齐到 AppCore 的 tick 相位（apply 时的 nowMs 就是某次 tick 的时刻）。
+    // 直接拿精确截止时刻取整，跳变点可能正好落在 tick 上（重启后 tick 相位是随机的），
+    // 几毫秒的抖动就让数字一次跳 2（真机 11/26 看到 112→110）。对齐后每次 tick 稳定减 1，误差不超过半秒。
+    property double shownDeadlineMs: 0
+    property double shownFamilyMs: 0
+    readonly property int secondsLeft: shownDeadlineMs > 0 ? Math.max(0, Math.round((shownDeadlineMs - nowMs) / 1000)) : 0
+    readonly property int familyLeft: shownFamilyMs > 0 ? Math.max(0, Math.round((shownFamilyMs - nowMs) / 1000)) : 0
+
+    function alignToTick(ts, now) {
+        return ts > 0 ? now + Math.round((ts - now) / 1000) * 1000 : ts
+    }
+    readonly property real levelProgress: {
+        if (escalated || deadlineMs <= levelStartMs)
+            return 1
+        return Math.max(0, Math.min(1, (nowMs - levelStartMs) / (deadlineMs - levelStartMs)))
+    }
 
     readonly property int snoozeLeft: occ ? occ.snoozeRemaining : 3
+    // 从原定时刻（推迟过的话从推迟到的时刻）起已经过了几分钟，用来显示“已过 N 分钟”标签。
+    readonly property int lateMinutes: {
+        if (!occ)
+            return 0
+        var base = Number(occ.snoozeUntilTs || 0) > 0 ? Number(occ.snoozeUntilTs) : Number(occ.dueTs)
+        return Math.max(0, Math.floor((nowMs - base) / 60000))
+    }
 
     anchors.fill: parent
     visible: active
@@ -24,19 +62,73 @@ Item {
 
     signal closed()
 
+    function spokenText(item) {
+        return item.title + "。" + (item.dose || "")
+    }
+
     function open(item) {
         occ = item
-        escalated = false
-        escalationLeft = 120
         active = true
+        refresh()
         if (item)
-            DeviceVM.speak("提醒您：" + item.title + "。" + (item.dose || ""), "reminder")
+            DeviceVM.speak((level >= 2 ? "再次提醒您：" : "提醒您：") + spokenText(item), "reminder")
     }
 
     function close() {
         active = false
-        escalationTimer.stop()
         closed()
+    }
+
+    // 从 ReminderVM.today 里取这一条的最新状态（today 每次读都是现算的，带 nextEscalationInSec）。
+    function refresh() {
+        if (!occ)
+            return
+        var list = ReminderVM.today
+        for (var i = 0; i < list.length; ++i) {
+            if (list[i].occurrenceId === occ.occurrenceId) {
+                apply(list[i])
+                return
+            }
+        }
+        apply(occ)
+    }
+
+    function apply(item) {
+        occ = item
+        var lv = item.state === "escalated" ? 3 : Math.max(1, item.escalationLevel || 1)
+        var now = ReminderVM.nowMs
+        var notifiedAt = Number(item.notifiedAtTs || 0)
+        var escalateMs = Math.max(1, item.escalateAfterMin || 15) * 60 * 1000
+        var inSec = item.nextEscalationInSec !== undefined ? item.nextEscalationInSec : -1
+
+        level = lv
+        // 有 notifiedAtTs 时按 A.2 的规则直接算出精确时刻；nextEscalationInSec 是向上取整的秒数，
+        // 拿它反推会让截止时刻每次刷新都偏 0–1 秒。没有基线时才退回用它。
+        if (lv >= 3 || inSec < 0)
+            deadlineMs = -1
+        else if (notifiedAt > 0)
+            deadlineMs = notifiedAt + (lv <= 1 ? Math.min(voiceBoostSec * 1000, escalateMs) : escalateMs)
+        else
+            deadlineMs = now + inSec * 1000
+        if (notifiedAt <= 0)
+            notifiedAt = lv <= 1 && deadlineMs > 0 ? deadlineMs - voiceBoostSec * 1000 : now
+        notifyFamilyMs = lv < 3 ? notifiedAt + escalateMs : -1
+        levelStartMs = lv <= 1 ? notifiedAt : notifiedAt + voiceBoostSec * 1000
+        if (levelStartMs >= deadlineMs)
+            levelStartMs = now
+        shownDeadlineMs = alignToTick(deadlineMs, now)
+        shownFamilyMs = alignToTick(notifyFamilyMs, now)
+    }
+
+    // "1 分 05 秒" / "14 分钟"：一分钟以上只报整分钟，老人不用盯着秒数跳。
+    function leftText(sec) {
+        if (sec <= 0)
+            return "马上"
+        if (sec < 60)
+            return sec + " 秒后"
+        if (sec < 120)
+            return "1 分 " + Fmt.pad2(sec - 60) + " 秒后"
+        return Math.ceil(sec / 60) + " 分钟后"
     }
 
     function confirm() {
@@ -51,6 +143,21 @@ Item {
             return
         ReminderVM.snooze(occ.occurrenceId)
         close()
+    }
+
+    property Connections escalationWatcher: Connections {
+        target: ReminderVM
+        enabled: screen.active && screen.occ !== null
+
+        function onEscalationChanged(occurrenceId, level) {
+            if (occurrenceId !== screen.occ.occurrenceId)
+                return
+            var before = screen.level
+            screen.refresh()
+            // 升到 2 级：加强播报，再念一遍（B2 的播报接口）。
+            if (level === 2 && before < 2)
+                DeviceVM.speak("再次提醒您：" + screen.spokenText(screen.occ), "reminder-escalate")
+        }
     }
 
     // 提醒开着的时候这一条变成"错过且不允许补做"（有效期走完、时间被往后调）：
@@ -69,24 +176,10 @@ Item {
                     var title = item.title
                     screen.close()
                     Notify.info("「" + title + "」已过时，按要求不能补做")
+                    return
                 }
+                screen.apply(item)
                 return
-            }
-        }
-    }
-
-    property Timer escalationTimer: Timer {
-        interval: 1000
-        repeat: true
-        running: screen.active
-        onTriggered: {
-            if (screen.escalated)
-                return
-            screen.escalationLeft -= 1
-            if (screen.escalationLeft <= 0) {
-                screen.escalationLeft = 0
-                screen.escalated = true
-                ReminderVM.escalate(screen.occ.occurrenceId)
             }
         }
     }
@@ -99,21 +192,6 @@ Item {
         }
     }
 
-    Rectangle {
-        id: glow
-        anchors.fill: parent
-        color: "transparent"
-        border.width: screen.theme.px(8)
-        border.color: screen.theme.reminderAccent
-        opacity: 0.6
-    }
-
-    SequentialAnimation {
-        running: screen.active
-        loops: Animation.Infinite
-        NumberAnimation { target: glow; property: "opacity"; from: 0.75; to: 0.2; duration: 900 }
-        NumberAnimation { target: glow; property: "opacity"; from: 0.2; to: 0.75; duration: 900 }
-    }
 
     ColumnLayout {
         anchors.fill: parent
@@ -134,9 +212,7 @@ Item {
                 Layout.maximumWidth: chipText.implicitWidth + screen.theme.px(26)
                 Layout.preferredHeight: screen.theme.px(50)
                 radius: height / 2
-                color: Qt.rgba(1, 1, 1, 0.14)
-                border.width: 1
-                border.color: Qt.rgba(1, 1, 1, 0.3)
+                color: screen.theme.reminderAccent
 
                 AppText {
                     id: chipText
@@ -144,7 +220,8 @@ Item {
                     width: Math.min(implicitWidth, parent.width - screen.theme.px(26))
                     theme: screen.theme
                     role: "label"
-                    color: screen.theme.reminderInk
+                    font.weight: Font.Bold
+                    color: screen.theme.reminderBgBottom
                     // 两种文案一样长：夜间静音时直接换字，不加长标签，也不多占一行。
                     text: DeviceVM.nightQuietActive ? "夜间静音" : "到点提醒"
                     wrapMode: Text.NoWrap
@@ -158,12 +235,13 @@ Item {
 
             AppButton {
                 Layout.fillWidth: true
-                Layout.minimumWidth: Math.min(implicitWidth, screen.theme.px(168))
-                Layout.preferredWidth: screen.theme.px(168)
-                Layout.maximumWidth: screen.theme.px(168)
+                Layout.minimumWidth: Math.min(implicitWidth, screen.theme.px(190))
+                Layout.preferredWidth: screen.theme.px(190)
+                Layout.maximumWidth: screen.theme.px(190)
                 Layout.preferredHeight: screen.theme.touch
                 theme: screen.theme
                 text: "再听一遍"
+                iconName: "speaker"
                 kind: "outlineLight"
                 onClicked: {
                     if (screen.occ)
@@ -173,29 +251,89 @@ Item {
         }
 
         Flickable {
+            id: infoScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: width
-            contentHeight: info.height
+            contentHeight: Math.max(height, info.y + info.height)
             clip: true
+            boundsBehavior: Flickable.StopAtBounds
 
             Column {
                 id: info
                 width: parent.width
-                spacing: screen.theme.px(6)
+                // 内容少时放在中间，不再全挤在上半屏、中间留一大块空白。
+                y: Math.max(0, (infoScroll.height - height) / 2)
+                spacing: screen.theme.px(10)
 
-                AppText {
-                    theme: screen.theme
-                    role: "heading"
-                    color: screen.theme.reminderAccent
-                    text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
-                    wrapMode: Text.NoWrap
+                Rectangle {
+                    id: badge
+                    width: screen.theme.px(88)
+                    height: width
+                    radius: screen.theme.px(26)
+                    color: Qt.rgba(1, 0.76, 0.29, 0.16)
+
+                    Icon {
+                        anchors.centerIn: parent
+                        name: screen.occ ? Fmt.iconFor(screen.occ.title) : "bell"
+                        size: Math.round(parent.width * 0.56)
+                        strokeWidth: 2
+                        color: screen.theme.reminderAccent
+                    }
+
+                    SequentialAnimation on scale {
+                        running: screen.active
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 1.08; duration: 700; easing.type: Easing.InOutQuad }
+                        NumberAnimation { to: 1.0; duration: 700; easing.type: Easing.InOutQuad }
+                    }
+                }
+
+                Flow {
+                    width: parent.width
+                    spacing: screen.theme.px(12)
+                    topPadding: screen.theme.px(6)
+
+                    AppText {
+                        id: dueText
+                        theme: screen.theme
+                        role: "hero"
+                        font.pixelSize: screen.theme.px(44)
+                        font.weight: Font.Black
+                        color: screen.theme.reminderAccent
+                        text: screen.occ ? Fmt.hhmm(screen.occ.dueTs) : ""
+                        wrapMode: Text.NoWrap
+                    }
+
+                    Rectangle {
+                        objectName: "lateChip"
+                        visible: screen.lateMinutes >= 1
+                        y: (dueText.height - height) / 2
+                        width: lateText.implicitWidth + screen.theme.px(24)
+                        height: lateText.implicitHeight + screen.theme.px(8)
+                        radius: height / 2
+                        color: screen.theme.amberSoft
+
+                        AppText {
+                            id: lateText
+                            anchors.centerIn: parent
+                            theme: screen.theme
+                            role: "label"
+                            font.pixelSize: screen.theme.px(19)
+                            font.weight: Font.Bold
+                            color: screen.theme.amberInk
+                            text: Fmt.agoText(screen.lateMinutes)
+                            wrapMode: Text.NoWrap
+                        }
+                    }
                 }
 
                 AppText {
                     width: parent.width
                     theme: screen.theme
                     role: "hero"
+                    font.pixelSize: screen.theme.px(58)
+                    font.weight: Font.Black
                     color: screen.theme.reminderInk
                     text: screen.occ ? screen.occ.title : ""
                     wrapMode: Text.WordWrap
@@ -206,8 +344,8 @@ Item {
                     visible: text !== ""
                     theme: screen.theme
                     role: "heading"
+                    font.weight: Font.Bold
                     color: screen.theme.reminderInk
-                    opacity: 0.95
                     text: screen.occ ? (screen.occ.dose || "") : ""
                 }
 
@@ -216,20 +354,39 @@ Item {
                     visible: text !== ""
                     theme: screen.theme
                     role: "body"
-                    color: screen.theme.reminderInk
-                    opacity: 0.8
+                    color: screen.theme.reminderGhost
                     text: screen.occ ? (screen.occ.note || "") : ""
                 }
             }
         }
 
+        // 升级横幅：1 级普通提示（到加强播报的倒计时），2 级换成醒目的琥珀底并闪烁边框，
+        // 3 级红底"已通知家人"。三级各自一套颜色，老人不用读字也能看出事情在变严重。
         Rectangle {
+            id: escalationBanner
+            objectName: "escalationBanner"
             Layout.fillWidth: true
+            visible: screen.inChain || screen.escalated
             Layout.preferredHeight: escalationColumn.implicitHeight + screen.theme.px(24)
             radius: screen.theme.radiusSmall
-            color: Qt.rgba(0, 0, 0, 0.26)
-            border.width: 1
-            border.color: Qt.rgba(1, 1, 1, 0.16)
+            color: screen.level >= 3 ? screen.theme.sosRed
+                : screen.level === 2 ? screen.theme.reminderAccent
+                : Qt.rgba(0, 0, 0, 0.26)
+            // 动画只改 pulseWidth，不直接改 border.width：否则绑定被覆盖，升到 3 级后边框会停在半途。
+            property real pulseWidth: screen.theme.px(4)
+            border.width: screen.level === 2 ? pulseWidth : 1
+            border.color: screen.level >= 3 ? "#FFFFFF"
+                : screen.level === 2 ? "#FFFFFF"
+                : Qt.rgba(1, 1, 1, 0.16)
+
+            readonly property color ink: screen.level === 2 ? screen.theme.reminderBgBottom : screen.theme.reminderInk
+
+            SequentialAnimation on pulseWidth {
+                running: screen.active && screen.level === 2
+                loops: Animation.Infinite
+                NumberAnimation { to: screen.theme.px(1); duration: 500 }
+                NumberAnimation { to: screen.theme.px(5); duration: 500 }
+            }
 
             Column {
                 id: escalationColumn
@@ -238,27 +395,42 @@ Item {
                 spacing: screen.theme.px(8)
 
                 AppText {
+                    objectName: "escalationTitle"
                     width: parent.width
                     theme: screen.theme
-                    role: "body"
-                    color: screen.theme.reminderInk
-                    text: screen.escalated
-                        ? "已通知 " + screen.caregiverLabel + "，请尽快确认"
-                        : Fmt.countdownText(Math.ceil(screen.escalationLeft / 60)) + "通知 " + screen.caregiverLabel
+                    role: screen.level >= 2 ? "heading" : "body"
+                    font.weight: screen.level >= 2 ? Font.Bold : Font.Normal
+                    color: escalationBanner.ink
+                    text: screen.level >= 3 ? "已通知 " + screen.caregiverLabel + "，请尽快确认"
+                        : !screen.inChain ? "已经过了时间，请尽快完成"
+                        : screen.level === 2 ? "⚠ 还没确认，" + screen.leftText(screen.secondsLeft) + "通知 " + screen.caregiverLabel
+                        : screen.leftText(screen.secondsLeft) + "再提醒一遍"
+                    wrapMode: Text.WordWrap
+                }
+
+                AppText {
+                    width: parent.width
+                    visible: screen.inChain && screen.level === 1 && screen.notifyFamilyMs > 0
+                    theme: screen.theme
+                    role: "label"
+                    color: escalationBanner.ink
+                    opacity: 0.85
+                    text: Fmt.countdownText(Math.ceil(screen.familyLeft / 60)) + "还没确认就通知 " + screen.caregiverLabel
                     wrapMode: Text.WordWrap
                 }
 
                 Rectangle {
                     width: parent.width
+                    visible: screen.inChain
                     height: screen.theme.px(8)
                     radius: height / 2
-                    color: Qt.rgba(1, 1, 1, 0.18)
+                    color: screen.level === 2 ? Qt.rgba(0, 0, 0, 0.18) : Qt.rgba(1, 1, 1, 0.18)
 
                     Rectangle {
-                        width: parent.width * Math.max(0, Math.min(1, 1 - screen.escalationLeft / 120))
+                        width: parent.width * screen.levelProgress
                         height: parent.height
                         radius: height / 2
-                        color: screen.theme.reminderAccent
+                        color: screen.level === 2 ? screen.theme.reminderBgBottom : screen.theme.reminderAccent
                     }
                 }
             }
@@ -272,7 +444,8 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: screen.theme.reminderConfirm
                 theme: screen.theme
-                text: screen.occ && screen.occ.title.indexOf("药") >= 0 ? "✓ 我已吃好" : "✓ 我已经完成"
+                text: screen.occ && screen.occ.title.indexOf("药") >= 0 ? "我已吃好" : "我已经完成"
+                iconName: "check"
                 kind: "light"
                 onClicked: screen.confirm()
             }
@@ -281,7 +454,9 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: screen.theme.buttonLarge
                 theme: screen.theme
-                text: "稍后 10 分钟"
+                text: "稍后 10 分钟再提醒"
+                // 还能推几次直接写在键上，不用再往下找一行小字。
+                subtitle: !screen.escalated && screen.snoozeLeft > 0 ? "还可以推迟 " + screen.snoozeLeft + " 次" : ""
                 kind: "outlineLight"
                 enabled: !screen.escalated && screen.snoozeLeft > 0
                 onClicked: screen.snooze()
@@ -289,14 +464,15 @@ Item {
 
             AppText {
                 Layout.fillWidth: true
+                visible: screen.escalated || screen.snoozeLeft <= 0
                 theme: screen.theme
                 role: "label"
                 color: screen.theme.reminderInk
-                opacity: 0.75
+                opacity: 0.85
                 horizontalAlignment: Text.AlignHCenter
                 text: screen.escalated ? "已通知家人，请尽快确认"
-                    : screen.snoozeLeft > 0 ? "还可以推迟 " + screen.snoozeLeft + " 次"
-                    : "已推迟 3 次，请先吃药或联系家人"
+                    : "已推迟 3 次，请先完成或联系家人"
+                wrapMode: Text.WordWrap
             }
         }
     }

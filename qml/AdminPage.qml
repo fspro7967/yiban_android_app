@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// 看护人管理后台：紧急联系人、服务器地址、同步状态、外设板、AI 助手、操作日志。
+// 看护人管理后台：紧急联系人、暂停提醒、播报语速、服务器地址、同步状态、外设板、AI 助手、操作日志。
 // 只能从 CaregiverGatePage 验证成功后进入。
 Item {
     id: page
@@ -33,6 +33,44 @@ Item {
     // 进出后台都留痕。退出用 StackView 的移除通知：页头返回、底部按钮、系统返回键都会走到。
     Component.onCompleted: LogVM.note("管理", "进入管理后台")
     StackView.onRemoved: LogVM.note("管理", "退出管理后台")
+
+    // 暂停提醒（F1-6，真接口等 B1-2）：几个常用档位，都暂停到那天早上 8 点。
+    readonly property var pauseChoices: [
+        { key: "tomorrow", label: "1 天", days: 1 },
+        { key: "3d", label: "3 天", days: 3 },
+        { key: "7d", label: "1 周", days: 7 },
+        { key: "14d", label: "2 周", days: 14 }
+    ]
+    property string pauseChoice: "tomorrow"
+
+    function pauseUntilFor(key) {
+        var days = 1
+        for (var i = 0; i < pauseChoices.length; ++i)
+            if (pauseChoices[i].key === key)
+                days = pauseChoices[i].days
+        var d = new Date(Fmt.now.getFullYear(), Fmt.now.getMonth(), Fmt.now.getDate() + days, 8, 0, 0)
+        return d.getTime()
+    }
+
+    function choosePause(key) {
+        page.pauseChoice = key
+        if (Stub.paused)
+            Stub.pauseUntil(page.pauseUntilFor(key))
+    }
+
+    function setPaused(on) {
+        if (on)
+            Stub.pauseUntil(page.pauseUntilFor(page.pauseChoice))
+        else
+            Stub.resume()
+    }
+
+    // 播报语速（F1-6 放入口，真接口等 B2-7）：只给三档，老人家属不用去想 0.85 还是 0.9。
+    readonly property var speechRates: [
+        { label: "慢一点", rate: 0.75 },
+        { label: "正常", rate: 0.9 },
+        { label: "快一点", rate: 1.1 }
+    ]
 
     function saveContact() {
         const name = contactName.text.trim()
@@ -155,8 +193,8 @@ Item {
                     height: contactColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: contactColumn
@@ -243,6 +281,161 @@ Item {
                     theme: page.theme
                     role: "label"
                     color: page.theme.inkSoft
+                    text: "暂停提醒"
+                }
+
+                Rectangle {
+                    objectName: "pauseCard"
+                    width: parent.width
+                    height: pauseColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: Stub.paused ? page.theme.amberSoft : page.theme.surface
+                    border.width: 2
+                    border.color: Stub.paused ? page.theme.amber : page.theme.line
+
+                    Column {
+                        id: pauseColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(12)
+                        spacing: page.theme.gapSmall
+
+                        ToggleRow {
+                            width: parent.width
+                            theme: page.theme
+                            title: "暂停所有提醒"
+                            subtitle: Stub.paused ? "已暂停" : "住院、外出时用"
+                            checked: Stub.paused
+                            onToggled: function (value) { page.setPaused(value) }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.inkSoft
+                            text: Stub.paused ? "改暂停时长（都到那天早上 8 点）：" : "暂停多久（都到那天早上 8 点）："
+                        }
+
+                        GridLayout {
+                            width: parent.width
+                            columns: 2
+                            rowSpacing: page.theme.gapSmall
+                            columnSpacing: page.theme.gapSmall
+
+                            Repeater {
+                                model: page.pauseChoices
+
+                                delegate: AppButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: page.theme.touch
+                                    theme: page.theme
+                                    text: modelData.label
+                                    kind: "secondary"
+                                    selected: page.pauseChoice === modelData.key
+                                    onClicked: page.choosePause(modelData.key)
+                                }
+                            }
+                        }
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.primaryInk
+                            text: (Stub.paused ? "提醒已暂停到 " + Fmt.dayHourText(Stub.pausedUntilMs)
+                                               : "打开后会暂停到 " + Fmt.dayHourText(page.pauseUntilFor(page.pauseChoice)))
+                                + "，期间到点不弹、不通知家人、不算漏做，到期自动恢复。"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        AppText {
+                            width: parent.width
+                            visible: !Stub.pauseReal
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.danger
+                            text: "暂停功能还在接入：现在打开只是预览界面，提醒仍会照常响。"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
+                    text: "播报语速"
+                }
+
+                Rectangle {
+                    objectName: "speechRateCard"
+                    width: parent.width
+                    height: rateColumn.implicitHeight + page.theme.gap * 1.5
+                    radius: page.theme.radius
+                    color: page.theme.surface
+                    border.width: 1
+                    border.color: page.theme.cardLine
+
+                    Column {
+                        id: rateColumn
+                        width: parent.width - page.theme.gap * 2
+                        x: page.theme.gap
+                        y: page.theme.px(12)
+                        spacing: page.theme.gapSmall
+
+                        AppText {
+                            width: parent.width
+                            theme: page.theme
+                            role: "body"
+                            text: "提醒念出来的快慢"
+                            wrapMode: Text.WordWrap
+                        }
+
+                        // 竖排：三个按钮并排时选中态的"✓"会把字挤成省略号。
+                        Repeater {
+                            model: page.speechRates
+
+                            delegate: AppButton {
+                                required property var modelData
+                                width: rateColumn.width
+                                height: page.theme.touch
+                                theme: page.theme
+                                text: modelData.label
+                                kind: "secondary"
+                                selected: Math.abs(Stub.speechRate - modelData.rate) < 0.01
+                                onClicked: Stub.speechRate = modelData.rate
+                            }
+                        }
+
+                        AppButton {
+                            width: parent.width
+                            height: page.theme.touch
+                            theme: page.theme
+                            text: "试听一句"
+                            kind: "primary"
+                            onClicked: DeviceVM.speak("提醒您：该吃降压药了，一次一片。", "manual-rate")
+                        }
+
+                        AppText {
+                            width: parent.width
+                            visible: !Stub.speechRateReal
+                            theme: page.theme
+                            role: "label"
+                            color: page.theme.danger
+                            text: "语速调整还在接入：现在试听仍是默认语速。"
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                AppText {
+                    width: parent.width
+                    theme: page.theme
+                    role: "label"
+                    color: page.theme.inkSoft
                     text: "网络"
                 }
 
@@ -251,8 +444,8 @@ Item {
                     height: networkColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: networkColumn
@@ -306,7 +499,7 @@ Item {
                             label: "服务器地址"
                             placeholder: "https://..."
                             text: DeviceVM.serverUrl
-                            fontSize: page.theme.px(20)
+                            fontSize: page.theme.fontLabel
                             maxLength: 80
                             inputMethodHints: Qt.ImhUrlCharactersOnly
                             onTextChanged: page.probeText = ""
@@ -320,7 +513,7 @@ Item {
                             placeholder: "ses-… 配对码不可用时使用"
                             echoMode: TextInput.Password
                             text: ""
-                            fontSize: page.theme.px(20)
+                            fontSize: page.theme.fontLabel
                             maxLength: 256
                         }
 
@@ -402,8 +595,8 @@ Item {
                     height: syncColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: syncColumn
@@ -492,8 +685,8 @@ Item {
                     height: logColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: logColumn
@@ -515,7 +708,7 @@ Item {
                             theme: page.theme
                             role: "label"
                             color: page.theme.inkSoft
-                            text: "提醒、计划、记录、设置的每一步都会记在这里。演示版只保存在内存里，最多 200 条，重启后清空。"
+                            text: "提醒、计划、记录、设置的每一步都会记在这里。只保存在内存里，最多 200 条，重启后清空。"
                             wrapMode: Text.WordWrap
                         }
 

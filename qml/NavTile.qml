@@ -1,14 +1,13 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Layouts
 
-// 首页 2×2 大入口：整块可点，面积远大于最小触控目标，降低误触。
-Rectangle {
+// 首页入口块：上面一个有底色的线条图标，下面两个字的名字，整块可点。
+// 四块排成一行，省下的高度留给“现在该做”的主卡。
+Card {
     id: tile
 
-    property Theme theme
-    property string glyph: ""
+    property string iconName: ""
     property string title: ""
     property string subtitle: ""
     property color tint: theme ? theme.tileSand : "#F0E9DD"
@@ -16,57 +15,40 @@ Rectangle {
 
     signal clicked()
 
-    implicitHeight: theme ? theme.px(88) : 88
-    radius: theme ? theme.radius : 20
-    color: theme ? theme.surface : "#FFFFFF"
-    border.width: 2
-    border.color: theme ? theme.line : "#E0D2BC"
+    implicitHeight: theme ? theme.px(92) : 92
+    radius: theme ? theme.radius - theme.px(2) : 18
 
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: tile.theme ? tile.theme.px(10) : 10
-        spacing: tile.theme ? tile.theme.px(2) : 2
+    Column {
+        anchors.centerIn: parent
+        width: parent.width - (tile.theme ? tile.theme.px(8) : 8)
+        spacing: tile.theme ? tile.theme.px(6) : 6
 
-        RowLayout {
-            Layout.fillWidth: true
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: tile.theme ? tile.theme.px(44) : 44
+            height: width
+            radius: tile.theme ? tile.theme.px(14) : 14
+            color: tile.tint
 
-            Rectangle {
-                Layout.preferredWidth: tile.theme ? tile.theme.px(38) : 38
-                Layout.preferredHeight: tile.theme ? tile.theme.px(38) : 38
-                radius: width / 2
-                color: tile.tint
-
-                AppText {
-                    anchors.centerIn: parent
-                    theme: tile.theme
-                    role: "body"
-                    color: tile.badgeColor
-                    text: tile.glyph
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-
-            AppText {
-                theme: tile.theme
-                role: "body"
-                color: tile.theme ? tile.theme.inkSoft : "#584B3C"
-                text: "›"
-                opacity: 0.55
+            Icon {
+                anchors.centerIn: parent
+                name: tile.iconName
+                size: Math.round(parent.width * 0.58)
+                color: tile.badgeColor
             }
         }
-
-        Item { Layout.fillHeight: true }
 
         AppText {
-            Layout.fillWidth: true
+            width: parent.width
             theme: tile.theme
-            role: "body"
+            role: "label"
+            font.weight: Font.Bold
             text: tile.title
+            horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.NoWrap
-            elide: Text.ElideRight
+            fontSizeMode: Text.HorizontalFit
+            minimumPixelSize: 14
         }
-
     }
 
     MouseArea {
@@ -75,7 +57,7 @@ Rectangle {
 
         property real lastClick: 0
 
-        onPressed: tile.scale = 0.985
+        onPressed: tile.scale = 0.97
         onReleased: tile.scale = 1.0
         onCanceled: tile.scale = 1.0
         onClicked: {

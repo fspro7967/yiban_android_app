@@ -207,9 +207,9 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         set_source_files_properties("${_qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${_qml_name}")
     endforeach()
 
-    # qml/Fmt.qml、Undo.qml、Notify.qml 是 pragma Singleton 页面工具；
+    # qml/Fmt.qml、Undo.qml、Notify.qml、Stub.qml 是 pragma Singleton 页面工具；
     # 文件经 GLOB 加入时自动扫描不生效，需要显式标记，否则 qmldir 里会当成普通组件。
-    foreach(_singleton Fmt Undo Notify)
+    foreach(_singleton Fmt Undo Notify Stub)
         set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/qml/${_singleton}.qml"
                                     PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
     endforeach()
@@ -226,6 +226,8 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     )
 
     set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_APP_NAME "颐伴")
+    # 版本号只在 project(VERSION) 写一处：安卓“应用信息”里的版本和设置页底部显示的是同一个数。
+    set_property(TARGET yiban_android_app PROPERTY QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}")
 
 # Define target properties for Android with Qt 6 as:
     set_property(TARGET yiban_android_app APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -255,6 +257,8 @@ endif()
 
 # qmltyperegistrations 生成文件用 <device_vm.h> 这样的裸文件名 include 头，
 # 因此 facade 目录必须进 include path。
+target_compile_definitions(yiban_android_app PRIVATE YIBAN_VERSION="${PROJECT_VERSION}")
+
 target_include_directories(yiban_android_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vm
     ${CMAKE_CURRENT_SOURCE_DIR}/src/comm

@@ -204,8 +204,8 @@ Item {
                     height: timeoutColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radiusSmall
                     color: page.theme.surfaceAlt
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: timeoutColumn

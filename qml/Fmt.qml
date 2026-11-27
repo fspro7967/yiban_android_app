@@ -84,6 +84,38 @@ QtObject {
         return h + " 小时" + (r > 0 ? " " + r + " 分" : "") + "后"
     }
 
+    // 已经过了多久："已过 25 分钟" / "已过 3 小时"；不到 1 分钟算"到点了"。
+    // 用在首页主卡和提醒卡的状态标签上，替代原来一律写的"现在"。
+    function agoText(minutes) {
+        var m = Math.max(0, Math.floor(minutes))
+        if (m < 1)
+            return "到点了"
+        if (m < 60)
+            return "已过 " + m + " 分钟"
+        var h = Math.floor(m / 60)
+        if (h >= 24)
+            return "已过 " + Math.floor(h / 24) + " 天"
+        return "已过 " + h + " 小时"
+    }
+
+    // 按提醒名称挑一个图标（Icon.qml 的名字），没有匹配的就用铃铛。
+    function iconFor(title) {
+        var t = String(title || "")
+        if (t.indexOf("血压") >= 0 || t.indexOf("血糖") >= 0 || t.indexOf("心率") >= 0)
+            return "activity"
+        if (t.indexOf("药") >= 0)
+            return "pill"
+        if (t.indexOf("水") >= 0)
+            return "droplet"
+        if (t.indexOf("诊") >= 0 || t.indexOf("医院") >= 0 || t.indexOf("体检") >= 0)
+            return "clipboard"
+        if (t.indexOf("睡") >= 0)
+            return "moon"
+        if (t.indexOf("走") >= 0 || t.indexOf("散步") >= 0 || t.indexOf("运动") >= 0)
+            return "walk"
+        return "bell"
+    }
+
     function durationText(minutes) {
         var m = Math.max(0, Math.round(minutes))
         var h = Math.floor(m / 60)
@@ -152,6 +184,29 @@ QtObject {
         if (missed === 0)
             return "最近 " + days + " 天完成率 " + rate + "%，一次都没漏。"
         return "最近 " + days + " 天完成率 " + rate + "%，漏了 " + missed + " 次提醒。"
+    }
+
+    // 权限缺项计数（I3 permissionDiagnostics）：首页提示条和权限页都用这一个函数，两处数字一致。
+    // 可选项（只有语音助手用的麦克风）没开不算缺，不在首页催老人。
+    function optionalPermission(key) {
+        return key === "microphone"
+    }
+
+    function missingPermissions(list) {
+        var n = 0
+        for (var i = 0; list && i < list.length; ++i)
+            if (list[i].granted !== true && !optionalPermission(list[i].key))
+                ++n
+        return n
+    }
+
+    // 毫秒时间戳 → "12月1日 8点" / "12月1日 8:30"（暂停提醒的到期时间）
+    function dayHourText(ts) {
+        if (!ts)
+            return ""
+        var d = new Date(Number(ts))
+        var clock = d.getMinutes() === 0 ? d.getHours() + "点" : d.getHours() + ":" + pad2(d.getMinutes())
+        return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + clock
     }
 
     property Timer clock: Timer {

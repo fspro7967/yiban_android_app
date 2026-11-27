@@ -10,7 +10,12 @@ QtObject {
     // 0 = 标准（本身已按老年人放大），1 = 大，2 = 特大
     property int scaleLevel: 1
 
-    readonly property real scale: scaleLevel === 0 ? 1.0 : (scaleLevel === 1 ? 1.15 : 1.3)
+    // 看护人用的管理后台走普通 App 字号（compact），不跟老人的字号档走，一屏能放下更多功能；
+    // 0.72 倍时触控尺寸仍有 46，满足最小触控目标。
+    property bool compact: false
+
+    readonly property real scale: compact ? 0.72
+        : scaleLevel === 0 ? 1.0 : (scaleLevel === 1 ? 1.15 : 1.3)
 
     function px(value) {
         return Math.round(value * scale)
@@ -48,6 +53,9 @@ QtObject {
     readonly property color ink: "#211A12"
     readonly property color inkSoft: "#584B3C"
     readonly property color line: "#E0D2BC"
+    // 卡片用更浅的描边 + 一条底部投影，替代原来的 2px 深描边，让“重点卡”能靠底色跳出来。
+    readonly property color cardLine: "#EBE1D0"
+    readonly property color shadow: Qt.rgba(0.36, 0.25, 0.12, 0.09)
 
     readonly property color primary: "#175E2C"
     readonly property color primarySoft: "#E3F1E0"
@@ -56,6 +64,9 @@ QtObject {
     readonly property color amber: "#9A4A00"
     readonly property color amberSoft: "#FFEDC4"
     readonly property color amberInk: "#5A2D00"
+    // 进度条里“还没做”的那一段、图表里“没全做完”的柱子（非文字，只需和底色拉开）。
+    readonly property color amberBar: "#E8B866"
+    readonly property color blue: "#1F4C8F"
 
     readonly property color danger: "#B3261E"
     readonly property color dangerSoft: "#FBE3E0"

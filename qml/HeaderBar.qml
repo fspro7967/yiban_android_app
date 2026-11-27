@@ -3,7 +3,9 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 
-// 页面顶栏：返回键在左，标题居中区靠左，右侧可放“管理”等文字操作。
+// 页面顶栏：左边是带字的“‹ 返回”，老人不用猜箭头的意思。
+// 没有右侧操作时标题跟在返回键后面；有右侧操作（如“新建”）时标题另起一行，
+// 大字号下也不会被两边的按钮挤成省略号。
 Item {
     id: header
 
@@ -12,62 +14,91 @@ Item {
     property string subtitle: ""
     property bool showBack: true
     property string actionText: ""
+    property string actionIcon: "plus"
 
     signal back()
     signal action()
 
-    implicitHeight: theme.px(94)
+    readonly property bool stacked: actionText !== ""
 
-    RowLayout {
-        anchors.fill: parent
-        anchors.margins: header.theme.gapSmall
+    implicitHeight: column.implicitHeight + theme.gapSmall * 2
+
+    component TitleBlock: ColumnLayout {
+        spacing: 0
+
+        AppText {
+            Layout.fillWidth: true
+            theme: header.theme
+            role: "title"
+            font.pixelSize: header.theme.px(32)
+            font.weight: Font.Bold
+            text: header.title.length > 0 ? header.title : " "
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
+        }
+
+        AppText {
+            Layout.fillWidth: true
+            visible: header.subtitle !== ""
+            theme: header.theme
+            role: "label"
+            color: header.theme.inkSoft
+            text: header.subtitle
+            wrapMode: Text.NoWrap
+            elide: Text.ElideRight
+        }
+    }
+
+    ColumnLayout {
+        id: column
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
         spacing: header.theme.gapSmall
 
-        AppButton {
-            opacity: header.showBack ? 1 : 0
-            enabled: header.showBack
-            Layout.preferredWidth: header.showBack ? header.theme.px(64) : 0
-            Layout.preferredHeight: header.theme.touch
-            theme: header.theme
-            text: "←"
-            kind: "ghost"
-            onClicked: header.back()
-        }
-
-        ColumnLayout {
+        RowLayout {
             Layout.fillWidth: true
-            spacing: 0
+            spacing: header.theme.gapSmall
 
-            AppText {
-                Layout.fillWidth: true
+            AppButton {
+                objectName: "headerBack"
+                visible: header.showBack
+                Layout.preferredHeight: header.theme.touch
+                Layout.preferredWidth: implicitWidth
                 theme: header.theme
-                role: "heading"
-                text: header.title.length > 0 ? header.title : " "
-                wrapMode: Text.NoWrap
-                elide: Text.ElideRight
+                text: "返回"
+                iconName: "back"
+                kind: "secondary"
+                Accessible.name: "返回上一页"
+                onClicked: header.back()
             }
 
-            AppText {
+            TitleBlock {
+                visible: !header.stacked
                 Layout.fillWidth: true
-                visible: header.subtitle !== ""
+            }
+
+            Item {
+                visible: header.stacked
+                Layout.fillWidth: true
+            }
+
+            AppButton {
+                objectName: "headerAction"
+                visible: header.stacked
+                Layout.preferredHeight: header.theme.touch
+                Layout.preferredWidth: implicitWidth
                 theme: header.theme
-                role: "label"
-                color: header.theme.inkSoft
-                text: header.subtitle
-                wrapMode: Text.NoWrap
-                elide: Text.ElideRight
+                text: header.actionText
+                iconName: header.actionIcon
+                kind: "primary"
+                onClicked: header.action()
             }
         }
 
-        AppButton {
-            opacity: header.actionText !== "" ? 1 : 0
-            enabled: header.actionText !== ""
-            Layout.preferredWidth: header.actionText !== "" ? header.theme.px(88) : 0
-            Layout.preferredHeight: header.theme.touch
-            theme: header.theme
-            text: header.actionText
-            kind: "ghost"
-            onClicked: header.action()
+        TitleBlock {
+            visible: header.stacked
+            Layout.fillWidth: true
         }
     }
 }

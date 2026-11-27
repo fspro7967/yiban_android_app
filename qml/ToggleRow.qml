@@ -14,7 +14,7 @@ Item {
 
     signal toggled(bool value)
 
-    implicitHeight: theme.px(92)
+    implicitHeight: Math.max(theme.px(92), textColumn.implicitHeight + theme.px(16))
     opacity: enabled ? 1.0 : 0.5
 
     property real _lastToggle: 0
@@ -24,6 +24,7 @@ Item {
         spacing: row.theme.gap
 
         ColumnLayout {
+            id: textColumn
             Layout.fillWidth: true
             spacing: 0
 
@@ -32,8 +33,7 @@ Item {
                 theme: row.theme
                 role: "body"
                 text: row.title
-                wrapMode: Text.NoWrap
-                elide: Text.ElideRight
+                wrapMode: Text.WordWrap
             }
 
             AppText {
@@ -43,8 +43,7 @@ Item {
                 role: "label"
                 color: row.theme.inkSoft
                 text: row.subtitle
-                wrapMode: Text.NoWrap
-                elide: Text.ElideRight
+                wrapMode: Text.WordWrap
             }
         }
 

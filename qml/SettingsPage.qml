@@ -43,7 +43,7 @@ Item {
         var number = ProfileVM.caregiverPhone.replace(/\s/g, "")
         LogVM.note("呼救", "拨打紧急联系人电话：" + ProfileVM.caregiverPhone)
         if (!Qt.openUrlExternally("tel:" + number))
-            Notify.info("演示版没有接入拨号，号码：" + ProfileVM.caregiverPhone)
+            Notify.info("没能打开拨号，请手动拨打：" + ProfileVM.caregiverPhone)
     }
 
     ColumnLayout {
@@ -94,8 +94,8 @@ Item {
                     height: fontColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: fontColumn
@@ -177,8 +177,8 @@ Item {
                     height: voiceColumn.implicitHeight + page.theme.gap
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: voiceColumn
@@ -277,8 +277,8 @@ Item {
                     height: familyColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: familyColumn
@@ -331,8 +331,8 @@ Item {
                     height: deviceColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: deviceColumn
@@ -411,8 +411,8 @@ Item {
                     height: adminColumn.implicitHeight + page.theme.gap * 1.5
                     radius: page.theme.radius
                     color: page.theme.surface
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: adminColumn
@@ -472,8 +472,8 @@ Item {
                     visible: DeviceVM.demoMode
                     radius: page.theme.radius
                     color: page.theme.surfaceAlt
-                    border.width: 2
-                    border.color: page.theme.line
+                    border.width: 1
+                    border.color: page.theme.cardLine
 
                     Column {
                         id: demoColumn
@@ -517,7 +517,8 @@ Item {
                     role: "label"
                     color: page.theme.inkSoft
                     horizontalAlignment: Text.AlignHCenter
-                    text: "颐伴 · 老人提醒演示版 0.1\n数据只保存在本机"
+                    objectName: "versionText"
+                    text: "颐伴 · 老人提醒  版本 " + Qt.application.version
                     wrapMode: Text.WordWrap
                 }
             }
