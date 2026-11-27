@@ -1,8 +1,10 @@
 // 跨进程重启验证：同一个库文件，连续 10 次"启动 → 校验 → 写一条 → 退出"。
 // 每次子进程都重新构造 AppCore（等价于真实重启：新进程、新内存、老 SQLite）。
+// 同时验证暂停状态跨重启保留（B1-2 验收：暂停期间重启仍处于暂停）。
 #include <QtTest>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QTemporaryDir>
@@ -15,13 +17,24 @@ namespace {
 int runChild(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
-    const int expected = argc > 2 ? QByteArray(argv[2]).toInt() : 0;
+    const int round = argc > 2 ? QByteArray(argv[2]).toInt() : 0;
     AppCore *core = AppCore::instance();
 
     const int cups = core->waterCups();
-    if (cups != expected) {
-        fprintf(stderr, "CHILD mismatch: got %d expected %d\n", cups, expected);
+    if (cups != round) {
+        fprintf(stderr, "CHILD mismatch: got %d expected %d\n", cups, round);
         return 3;
+    }
+
+    if (round == 0) {
+        if (core->pauseUntilMs() != 0) {
+            fprintf(stderr, "CHILD pause should start empty\n");
+            return 4;
+        }
+        core->pauseUntil(QDateTime::currentMSecsSinceEpoch() + 7LL * 24 * 3600 * 1000);
+    } else if (core->pauseUntilMs() <= 0) {
+        fprintf(stderr, "CHILD pause lost after restart\n");
+        return 5;
     }
 
     core->addRecord(QStringLiteral("water"), 1, QStringLiteral("杯"));
@@ -30,7 +43,8 @@ int runChild(int argc, char **argv)
         QCoreApplication::processEvents();
         QThread::msleep(20);
     }
-    printf("CHILD ok cups=%d\n", core->waterCups());
+    printf("CHILD ok cups=%d pause=%lld\n", core->waterCups(),
+           static_cast<long long>(core->pauseUntilMs()));
     return 0;
 }
 

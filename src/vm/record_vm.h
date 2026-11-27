@@ -23,6 +23,10 @@ class RecordVM : public QObject
     Q_PROPERTY(QString sleepEnd READ sleepEnd NOTIFY recordsChanged)
     Q_PROPERTY(int sleepMinutes READ sleepMinutes NOTIFY recordsChanged)
     Q_PROPERTY(int activityMinutes READ activityMinutes NOTIFY recordsChanged)
+    // I4 统计趋势：{water: [...], sleep: [...], activity: [...]}，每项 {date, value}，
+    // 空日补 0、最后一项是今天。记录变化会触发 recordsChanged。
+    Q_PROPERTY(QVariantMap trends7 READ trends7 NOTIFY recordsChanged)
+    Q_PROPERTY(QVariantMap trends30 READ trends30 NOTIFY recordsChanged)
 
 public:
     explicit RecordVM(QObject *parent = nullptr);
@@ -36,6 +40,10 @@ public:
     QString sleepEnd() const;
     int sleepMinutes() const;
     int activityMinutes() const;
+    QVariantMap trends7() const;
+    QVariantMap trends30() const;
+    // 单条趋势（type: water / sleep / activity），days 天内按自然日补齐。
+    Q_INVOKABLE QVariantList trend(const QString &type, int days) const;
 
     Q_INVOKABLE qint64 addWater();
     Q_INVOKABLE qint64 markSleepStart();

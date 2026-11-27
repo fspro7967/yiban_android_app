@@ -72,6 +72,31 @@ int RecordVM::activityMinutes() const
     return AppCore::instance()->activityMinutes();
 }
 
+QVariantMap RecordVM::trends7() const
+{
+    AppCore *core = AppCore::instance();
+    QVariantMap out;
+    out.insert(QStringLiteral("water"), core->recordTrend(QStringLiteral("water"), 7));
+    out.insert(QStringLiteral("sleep"), core->recordTrend(QStringLiteral("sleep"), 7));
+    out.insert(QStringLiteral("activity"), core->recordTrend(QStringLiteral("activity"), 7));
+    return out;
+}
+
+QVariantMap RecordVM::trends30() const
+{
+    AppCore *core = AppCore::instance();
+    QVariantMap out;
+    out.insert(QStringLiteral("water"), core->recordTrend(QStringLiteral("water"), 30));
+    out.insert(QStringLiteral("sleep"), core->recordTrend(QStringLiteral("sleep"), 30));
+    out.insert(QStringLiteral("activity"), core->recordTrend(QStringLiteral("activity"), 30));
+    return out;
+}
+
+QVariantList RecordVM::trend(const QString &type, int days) const
+{
+    return AppCore::instance()->recordTrend(type, days);
+}
+
 qint64 RecordVM::addWater()
 {
     AppCore *core = AppCore::instance();

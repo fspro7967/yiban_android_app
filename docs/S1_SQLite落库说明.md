@@ -157,5 +157,46 @@ events(event_id TEXT PRIMARY KEY, occurrence_id INTEGER, action TEXT, ts INTEGER
 | `tests/tst_data_layer.cpp`（4 例） | 同步队列生命周期/幂等、升级链 1→2→3、跨天归档与统计 |
 | `tests/tst_restart.cpp`（1 例，10 轮） | 同库连续 10 次"启动→校验→写一条→退出"，验证落盘与恢复 |
 
-完整 `ctest`：**6/6 通过**（原 `facade_app_core` 24 条契约一字未改、原样通过）。
+完整 `ctest`：**9/9 通过**（原 `facade_app_core` 24 条契约一字未改、原样通过）。
+说明：其中 `sync_flow` 是 B2 加的；`trends` / `pause_mode` 是本轮（B1-1 / B1-2）加的。
+以 `ctest -N` 的输出为准，组数变化时记得同步这一行。
+
+---
+
+## 9. 2026-11-27 增量：统计趋势（I4）与暂停模式（B1-1 / B1-2）
+
+对应 `1124TODO` 里标了"这周做完"的 B1 项。接口登记见 `agent/接口冻结清单.md` 附录 A.3 / A.4。
+
+### 9.1 统计趋势（B1-1，I4）
+
+- `AppCore::recordTrend(type, days)`：按自然日聚合，返回 `days` 项 `{date, value}`，
+  **空日补 0**、最后一项是今天；
+- 单位：`water` 杯/天、`activity` 分钟/天、`sleep` 分钟/天；
+- 睡眠按"起床那天"归日（每条 `sleep_end` 匹配它之前最近的 `sleep_start`），
+  所以昨晚 22:40 → 今早 06:30 的 470 分钟算在今天；
+- `RecordVM` 暴露 `trends7` / `trends30` 两个只读属性（`{water, sleep, activity}`）和
+  `trend(type, days)`；都挂 `NOTIFY recordsChanged`，记录一变就刷新。
+
+> 没有按 TODO 建议直接下沉 SQL：`records` 表按行存 JSON，睡眠还要跨零点配对，
+> 硬写 SQL 容易在时区/配对边界上出错。B1-8（下沉 SQL）仍留在 P2，届时以现有单测做等价性校验。
+
+### 9.2 暂停模式（B1-2，R1-7 / I5 的一部分）
+
+- 设备级开关 `m_pauseUntilMs`，落 `meta.pause_until_ms`，**重启仍处于暂停**，到期自动恢复；
+- 暂停期内到点的 pending/snoozed 提醒打 `paused = true`：`onTick` 直接跳过，
+  **不弹、不升级、不产生 missed**；
+- 统计口径：`tally()` 把 paused 单独计数，**不进分母**、不算漏服；`stats(n)` 每天多一个
+  `paused` 键；`todayTotal/todayDone/pendingCount` 同样排除 paused（首页和统计页口径一致）；
+- 手动恢复只放开"还没到点"的提醒，暂停期间已经过去的不补弹；
+- 暂停 / 恢复各记一条操作日志；`resetStorage()` 会清掉暂停。
+
+### 9.3 测试
+
+| 新增/改动 | 覆盖 |
+| --- | --- |
+| `tests/tst_trends.cpp`（4 例） | 7/30 长度与空日补 0、睡眠跨零点归日、跨天窗口后移、记录变化刷新 |
+| `tests/tst_pause.cpp`（4 例） | 暂停不弹/不进 pending、暂停结束后照常、手动恢复、统计不算漏服 |
+| `tests/tst_restart.cpp`（扩展） | 第 0 轮设暂停，后面 9 轮重启都验证暂停仍在 |
+
+完整 `ctest`：**9/9 通过**。
 

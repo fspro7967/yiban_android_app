@@ -52,6 +52,34 @@ add_test(NAME restart_persistence COMMAND tst_restart)
 set_tests_properties(restart_persistence PROPERTIES ENVIRONMENT
     "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_restart.sqlite")
 
+# B1-1 统计趋势（I4）：序列长度、空日补 0、跨天窗口、记录变化刷新。
+qt_add_executable(tst_trends
+    tst_trends.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.h
+    ${CMAKE_SOURCE_DIR}/src/vm/record_vm.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/record_vm.h
+)
+target_include_directories(tst_trends PRIVATE ${CMAKE_SOURCE_DIR}/src/vm)
+target_link_libraries(tst_trends PRIVATE Qt6::Core Qt6::Qml Qt6::Test Qt6::Sql)
+
+add_test(NAME trends COMMAND tst_trends)
+set_tests_properties(trends PROPERTIES ENVIRONMENT
+    "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_trends.sqlite")
+
+# B1-2 暂停模式：暂停期不弹/不升级/不算漏服，恢复后照常调度。
+qt_add_executable(tst_pause
+    tst_pause.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.cpp
+    ${CMAKE_SOURCE_DIR}/src/vm/app_core.h
+)
+target_include_directories(tst_pause PRIVATE ${CMAKE_SOURCE_DIR}/src/vm)
+target_link_libraries(tst_pause PRIVATE Qt6::Core Qt6::Qml Qt6::Test Qt6::Sql)
+
+add_test(NAME pause_mode COMMAND tst_pause)
+set_tests_properties(pause_mode PROPERTIES ENVIRONMENT
+    "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_pause.sqlite")
+
 # 管理后台"测试连接"的探测逻辑：用本机假服务器覆盖各种应答，不需要外网。
 find_package(Qt6 REQUIRED COMPONENTS Network)
 
