@@ -266,6 +266,10 @@ void SyncVM::retrySync()
     AppCore::instance()->logOperation(
         QStringLiteral("管理"),
         QStringLiteral("手动同步：%1 条记录待上传").arg(pendingCount()));
+    // 手动同步是用户明确要求的重试：跳过上一轮 rejected[retryable:true]
+    // 或网络失败留下的退避，立刻再试一次。
+    m_uploadBackoff.stop();
+    m_backoffMs = 0;
     m_failed = false;
     emit syncChanged();
     cycle();
@@ -282,6 +286,10 @@ void SyncVM::cycle()
 
 void SyncVM::uploadPending()
 {
+    // 退避期间不重发：rejected[retryable:true] 和网络失败都走这条路，
+    // 否则 eventsChanged 会在同一轮事件循环里把 busy 事件立刻打回去。
+    if (m_uploadBackoff.isActive())
+        return;
     if (m_uploadReq || m_alarmReq || !canSync())
         return;
     // 挂在还没上传的计划上的事件先留着（服务端没有那个 occurrence）
@@ -575,17 +583,33 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
         m_uploadReq = 0;
         if (ok) {
             // accepted 里的都算已提交（applied=false 是服务端去重，同样
-            // 不需要再传）；rejected 是服务端明确拒绝（过时状态、找不到
-            // occurrence），重传也不会变结果，标记过期防止无限重放。
+            // 不需要再传）；rejected 按 retryable 分流（1124TODO B2-1）：
+            //   * false 或字段缺失（旧云端）→ 终态过期，不无限重放；
+            //   * true（busy / internal_error）→ 留在队列，按退避下一轮重发。
             QVariantList accepted = ackedFromServer(
                 body.value(QLatin1String("accepted")).toArray());
-            QStringList rejected;
-            for (const auto &item : body.value(QLatin1String("rejected")).toArray())
-                rejected.append(item.toObject().value(QLatin1String("event_id")).toString());
+            QStringList expired;
+            bool hasRetryable = false;
+            for (const auto &item : body.value(QLatin1String("rejected")).toArray()) {
+                const QJsonObject rejected = item.toObject();
+                const QString eventId =
+                    rejected.value(QLatin1String("event_id")).toString();
+                if (eventId.isEmpty())
+                    continue;
+                if (rejected.value(QLatin1String("retryable")).toBool(false))
+                    hasRetryable = true;
+                else
+                    expired.append(eventId);
+            }
             AppCore::instance()->markEventsSynced(accepted);
-            if (!rejected.isEmpty())
-                AppCore::instance()->expireEvents(rejected);
+            if (!expired.isEmpty())
+                AppCore::instance()->expireEvents(expired);
             noteSuccess();
+            if (hasRetryable) {
+                // 留队的事件不能被 eventsChanged 触发的即时上传又原样发出去，
+                // 起退避定时器；uploadPending() 在退避期间直接返回。
+                scheduleUploadRetry();
+            }
         } else if (status == 409) {
             // 服务端把状态冲突作为顶层 409 返回（不是 200 里的 rejected 数组）。
             // 这类事件重传永远不会成功：按 occurrence_id 找出本批事件并标记过期，

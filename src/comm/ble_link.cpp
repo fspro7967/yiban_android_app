@@ -1,3 +1,5 @@
+#ifndef YIBAN_NO_BLUETOOTH  // 无 QtBluetooth 的桌面构建改用 ble_link_stub.cpp
+
 #include "ble_link.h"
 
 #include "devicehandler.h"
@@ -504,8 +506,18 @@ QString BleLink::deviceId(const QBluetoothDeviceInfo &info)
     return info.address().isNull() ? info.deviceUuid().toString() : info.address().toString();
 }
 
+bool BleLink::bound() const { return !m_boundId.isEmpty(); }
+
+QString BleLink::detail() const { return m_detail; }
+
+int BleLink::sentCount() const { return m_sentCount; }
+
+int BleLink::receivedCount() const { return m_receivedCount; }
+
 bool BleLink::advertisesBoard(const QBluetoothDeviceInfo &info)
 {
     static const QBluetoothUuid boardService{uuidText(BoardLinkProtocol::kServiceUuid)};
     return info.serviceUuids().contains(boardService);
 }
+
+#endif // !YIBAN_NO_BLUETOOTH

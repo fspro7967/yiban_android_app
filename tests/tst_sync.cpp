@@ -190,6 +190,24 @@ QVariantMap recordById(qint64 recordId)
     return {};
 }
 
+// 事件回写后的 serverSeq：0=待传，>0=已 ack，-1=服务端终态拒收
+qint64 serverSeqOfEvent(const QString &eventId)
+{
+    for (const QVariant &e : AppCore::instance()->eventLog()) {
+        const QVariantMap event = e.toMap();
+        if (event.value(QStringLiteral("eventId")).toString() == eventId)
+            return event.value(QStringLiteral("serverSeq")).toLongLong();
+    }
+    return -999;
+}
+
+QString firstEventId(const QJsonObject &body)
+{
+    const QJsonArray events = body.value(QLatin1String("events")).toArray();
+    return events.isEmpty() ? QString()
+                            : events.first().toObject().value(QLatin1String("event_id")).toString();
+}
+
 } // namespace
 
 class TestSync : public QObject
@@ -204,6 +222,9 @@ private slots:
     void ackIsPersisted();
     void sosGoesThroughAlarm();
     void rejectedEventsAreExpired();
+    void busyRejectedEventStaysPending();
+    void stateConflictRejectedEventExpires();
+    void appliedFalseAcceptedIsMarkedSynced();
     void topLevelConflictExpiresEvents();
     void pullStateAppliesOccurrence();
     void localFinalStateNotReverted();
@@ -451,6 +472,120 @@ void TestSync::rejectedEventsAreExpired()
     flush(); // 回执是队列投递的，冲洗一轮事件循环让它们落袋
     QCOMPARE(vm->pendingCount(), 0);          // 不再出现在待上传里
     QVERIFY(vm->eventLogCsv().contains(QStringLiteral("confirm"))); // 日志仍可导出
+    delete vm;
+}
+
+void TestSync::busyRejectedEventStaysPending()
+{
+    // B2-1 ①：busy/retryable:true 不能标过期，下一轮重发后 accepted。
+    makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+    QCOMPARE(vm->pendingCount(), 1);
+
+    QString busyEventId;
+    int rounds = 0;
+    client->eventsHandler = [&rounds, &busyEventId](const QJsonObject &body) {
+        const QString eventId = firstEventId(body);
+        if (busyEventId.isEmpty())
+            busyEventId = eventId;
+        if (++rounds == 1) {
+            return QJsonObject {
+                { QLatin1String("accepted"), QJsonArray() },
+                { QLatin1String("rejected"), QJsonArray {
+                    QJsonObject {
+                        { QLatin1String("event_id"), eventId },
+                        { QLatin1String("code"), QStringLiteral("busy") },
+                        { QLatin1String("retryable"), true },
+                    },
+                } },
+            };
+        }
+        return QJsonObject {
+            { QLatin1String("accepted"), QJsonArray {
+                QJsonObject {
+                    { QLatin1String("event_id"), eventId },
+                    { QLatin1String("server_seq"), 77 },
+                },
+            } },
+            { QLatin1String("rejected"), QJsonArray() },
+        };
+    };
+
+    vm->retrySync();
+    flushAll();
+    QCOMPARE(rounds, 1);                       // 退避期间不立即重放
+    QCOMPARE(vm->pendingCount(), 1);
+    QCOMPARE(serverSeqOfEvent(busyEventId), 0); // serverSeq 保持待上传
+
+    vm->retrySync();                            // 手动同步跳过退避
+    flushAll();
+    QCOMPARE(rounds, 2);                        // 同一 event_id 被重发
+    QCOMPARE(vm->pendingCount(), 0);
+    QCOMPARE(serverSeqOfEvent(busyEventId), 77);
+    delete vm;
+}
+
+void TestSync::stateConflictRejectedEventExpires()
+{
+    // B2-1 ②：state_conflict/retryable:false 是终态，不再上传。
+    makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+
+    QString staleEventId;
+    client->eventsHandler = [&staleEventId](const QJsonObject &body) {
+        staleEventId = firstEventId(body);
+        return QJsonObject {
+            { QLatin1String("accepted"), QJsonArray() },
+            { QLatin1String("rejected"), QJsonArray {
+                QJsonObject {
+                    { QLatin1String("event_id"), staleEventId },
+                    { QLatin1String("code"), QStringLiteral("state_conflict") },
+                    { QLatin1String("retryable"), false },
+                },
+            } },
+        };
+    };
+
+    vm->retrySync();
+    flushAll();
+    QCOMPARE(vm->pendingCount(), 0);
+    QCOMPARE(serverSeqOfEvent(staleEventId), -1);
+    QCOMPARE(countPosts(client, QStringLiteral("/events")), 1);
+    delete vm;
+}
+
+void TestSync::appliedFalseAcceptedIsMarkedSynced()
+{
+    // B2-1 ③：服务端去重命中（applied:false）也算已上传。
+    makeConfirmedOccurrence();
+    SyncVM *vm = nullptr;
+    FakeHttpClient *client = nullptr;
+    vm = makeSync(&client);
+
+    QString eventId;
+    client->eventsHandler = [&eventId](const QJsonObject &body) {
+        eventId = firstEventId(body);
+        return QJsonObject {
+            { QLatin1String("accepted"), QJsonArray {
+                QJsonObject {
+                    { QLatin1String("event_id"), eventId },
+                    { QLatin1String("server_seq"), 123 },
+                    { QLatin1String("applied"), false },
+                },
+            } },
+            { QLatin1String("rejected"), QJsonArray() },
+        };
+    };
+
+    vm->retrySync();
+    flushAll();
+    QCOMPARE(vm->pendingCount(), 0);
+    QCOMPARE(serverSeqOfEvent(eventId), 123);
+    QCOMPARE(countPosts(client, QStringLiteral("/events")), 1);
     delete vm;
 }
 
