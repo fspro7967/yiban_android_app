@@ -1889,6 +1889,15 @@ void AppCore::releasePausedAfterWindow(qint64 nowMs)
         if (dueAt + windowMs <= nowMs)
             continue;
         occ[QStringLiteral("paused")] = false;
+        // 暂停时"已经在响"的提醒升级基线被清零，但状态仍是 notified。直接放开
+        // paused 的话它既不会再弹（onTick 只对 pending 调 fireDue、闹钟也跳过
+        // notified），又会从当前时刻重新悄悄升级——老人什么都没听到，家人却被通知。
+        // 所以放回 pending，让下一次 onTick 照常 fireDue：重新弹出、响铃、从头计时。
+        if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("notified")) {
+            occ[QStringLiteral("state")] = QStringLiteral("pending");
+            occ[QStringLiteral("notifiedAtTs")] = 0;
+            occ[QStringLiteral("escalationLevel")] = 0;
+        }
         m_occurrences[i] = occ;
     }
 }

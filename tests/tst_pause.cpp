@@ -76,6 +76,8 @@ private slots:
     void snoozeDuringPauseSurvivesRebuild();
     void pauseExpiryReleasesWithinWindow();
     void undoDuringPauseStaysPaused();
+    // 第三轮 review 的第 1 条
+    void pauseExpiryRefiresRingingReminder();
 };
 
 void PauseTest::init()
@@ -325,6 +327,14 @@ void PauseTest::resumeWithinWindowStillFires()
     const QVariantMap occ = occurrenceFor(planId);
     QVERIFY(!occ.value(QStringLiteral("paused")).toBool());
     QCOMPARE(occ.value(QStringLiteral("canConfirm")).toBool(), true);
+
+    // 恢复后必须重新弹一次：否则它既不响又在悄悄升级，最后直接通知家人。
+    QSignalSpy due(core, &AppCore::reminderDue);
+    core->tickForTests();
+    QCOMPARE(due.count(), 1);
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("notified"));
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("escalationLevel")).toInt(), 1);
 }
 
 // 追加：暂停中推迟 → 推到暂停结束之后，不会永远不响
@@ -412,6 +422,40 @@ void PauseTest::undoDuringPauseStaysPaused()
 
     core->setClockForTests(at(9, 40));
     core->tickForTests();
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("notified"));
+}
+
+// 第三轮 1：已在响的提醒被暂停后，到期恢复要重新弹出，不能静默升级到通知家人
+void PauseTest::pauseExpiryRefiresRingingReminder()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = core->createPlan(planAt(9, 10));
+    QVERIFY(planId > 0);
+
+    core->setClockForTests(at(9, 10));
+    core->tickForTests();
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("notified"));
+
+    core->setClockForTests(at(9, 12));
+    QVERIFY(core->pauseUntil(at(9, 15)));
+    QVERIFY(occurrenceFor(planId).value(QStringLiteral("paused")).toBool());
+
+    // 9:15 到期自动恢复：这条要重新弹出来并从头计时
+    QSignalSpy due(core, &AppCore::reminderDue);
+    core->setClockForTests(at(9, 15));
+    core->tickForTests();
+    QCOMPARE(due.count(), 1);
+    const QVariantMap occ = occurrenceFor(planId);
+    QVERIFY(!occ.value(QStringLiteral("paused")).toBool());
+    QCOMPARE(occ.value(QStringLiteral("state")).toString(), QStringLiteral("notified"));
+    QCOMPARE(occ.value(QStringLiteral("escalationLevel")).toInt(), 1);
+
+    // 之后正常走 1→2：不会因为基线丢失而直接冲到 3 级
+    core->setClockForTests(at(9, 16));
+    core->tickForTests();
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("escalationLevel")).toInt(), 1);
     QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
              QStringLiteral("notified"));
 }
