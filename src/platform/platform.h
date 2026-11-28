@@ -4,6 +4,8 @@
 #include <QStringList>
 #include <QVariantList>
 
+#include <functional>
+
 // 平台层（B2）：全仓库唯一允许碰 Android 系统服务的地方。
 //
 // 约定：
@@ -72,6 +74,18 @@ void setSpeechPitch(double pitch);
 QStringList chineseVoices();
 // setLanguage(Locale.CHINA) 失败过：没有中文离线引擎，界面应提示。
 bool chineseVoiceMissing();
+
+// B2-9：语音确认（ASR）。平台层只负责"能不能听 + 开始/停止听 + 结果回传"，
+// 意图判定在 VoiceIntent（纯逻辑），业务动作在 DeviceVM。这样 Java→C++ 的
+// 回调只传原始识别文本，平台层不碰业务状态。
+// 结果由 setVoiceResultListener 注册的回调送回，回调已经在主线程执行。
+using VoiceResultListener = std::function<void(const QString &text)>;
+void setVoiceResultListener(VoiceResultListener listener);
+// 麦克风权限 + 系统有可用的中文识别服务。
+bool canListen();
+// 启动/停止一次"按住说话"识别。3 秒无结果会由 Java 侧回调空串（降级为按钮）。
+void startVoiceListening();
+void stopVoiceListening();
 
 // B2-2：连着灯板时起前台服务保活（connectedDevice 类型，常驻通知），断开时停掉。
 void startConnectionService();

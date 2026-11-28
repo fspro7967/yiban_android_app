@@ -39,10 +39,13 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Android 11+ 需要声明 TTS 服务的可见性，否则 TextToSpeech 找不到引擎 -->
+    <!-- Android 11+ 需要声明服务可见性：TTS 引擎 + 语音识别服务（B2-9） -->
     <queries>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
     </queries>
 

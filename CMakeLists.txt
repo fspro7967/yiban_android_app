@@ -145,6 +145,8 @@ set(VM_SOURCES
         src/comm/connection_probe.cpp
         src/comm/device_link.h
         src/comm/device_link.cpp
+        src/comm/voice_intent.h
+        src/comm/voice_intent.cpp
         src/comm/ble_link.h
         src/comm/ble_link.cpp
 )

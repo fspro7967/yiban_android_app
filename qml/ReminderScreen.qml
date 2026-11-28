@@ -75,6 +75,9 @@ Item {
     }
 
     function close() {
+        // B2-9：离开提醒页时停掉语音识别，避免结果迟到打到别的提醒上。
+        if (DeviceVM.voiceListening)
+            DeviceVM.stopVoiceConfirm()
         active = false
         closed()
     }
@@ -448,6 +451,26 @@ Item {
                 iconName: "check"
                 kind: "light"
                 onClicked: screen.confirm()
+            }
+
+            // B2-9：语音确认入口。设备能做语音时才显示（桌面/无识别服务时按钮照常不出现，
+            // 不影响 F1 的两键布局）；点一下开始听，3 秒没结果自动降级，也可再点一下停止。
+            AppButton {
+                Layout.fillWidth: true
+                Layout.preferredHeight: screen.theme.buttonLarge
+                visible: DeviceVM.voiceAvailable
+                theme: screen.theme
+                text: DeviceVM.voiceListening ? "正在听…说完点这里" : "不想打字？说话确认"
+                iconName: "speaker"
+                kind: "outlineLight"
+                onClicked: {
+                    if (!screen.occ)
+                        return
+                    if (DeviceVM.voiceListening)
+                        DeviceVM.stopVoiceConfirm()
+                    else
+                        DeviceVM.startVoiceConfirm(screen.occ.occurrenceId)
+                }
             }
 
             AppButton {

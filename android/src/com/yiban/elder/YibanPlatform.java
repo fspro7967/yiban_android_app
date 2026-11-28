@@ -16,10 +16,14 @@ import android.os.Build;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.telephony.SmsManager;
 import android.util.Log;
 
+import java.util.ArrayList;
 import java.util.Locale;
 
 /**
@@ -57,6 +61,16 @@ public final class YibanPlatform {
     private static volatile float sSpeechRate = 0.9f;
     private static volatile float sSpeechPitch = 1.0f;
     private static volatile boolean sChineseVoiceMissing = false;
+
+    // B2-9：语音确认（ASR）。只用系统 SpeechRecognizer，不编译 Whisper。
+    // 无中文识别服务 / 无麦克风权限时 canListen() 返回 false，界面降级为按钮，不崩。
+    private static SpeechRecognizer sRecognizer;
+    private static volatile boolean sListening = false;
+    /** 一次识别只回传一次结果（onResults / onError / 超时 只认第一个）。 */
+    private static volatile boolean sVoiceResultSent = false;
+
+    /** C++ 侧 platform.cpp 注册的 native 回调：把识别到的原始文本送回主线程处理。 */
+    public static native void onVoiceResult(String text);
 
     private YibanPlatform() {
     }
@@ -250,7 +264,7 @@ public final class YibanPlatform {
         }
     }
 
-    // ---------------------------------------------------------------- 语音
+    // ---------------------------------------------------------------- 语音播报（TTS）
 
     /**
      * 到点播报走系统 TTS，不走 Qt 的 QTextToSpeech。
@@ -437,6 +451,111 @@ public final class YibanPlatform {
         } catch (Throwable t) {
             sTts = null;
             sTtsReady = false;
+        }
+    }
+
+    // ---------------------------------------------------------------- 语音确认（B2-9，ASR）
+
+    /**
+     * 有没有可用的中文语音识别。没麦克风权限、设备没有识别服务都返回 false，
+     * 界面据此把"按住说话"降级为普通按钮（提醒页照常可点）。
+     */
+    public static boolean canListen(Context ctx) {
+        if (ctx == null) return false;
+        try {
+            if (android.content.pm.PackageManager.PERMISSION_GRANTED
+                    != ctx.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)) {
+                return false;
+            }
+            return SpeechRecognizer.isRecognitionAvailable(ctx);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 启动一次"按住说话"识别。结果（或超时空串）只通过 onVoiceResult 回传一次，
+     * 意图判定交给 C++ 的 VoiceIntent，这里不碰业务。
+     */
+    public static synchronized void startListening(Context ctx) {
+        if (ctx == null || !canListen(ctx)) {
+            // 静默回传空串：C++ 侧判定为 Unknown，只提示"没听清"，不动作。
+            fireVoiceResult("");
+            return;
+        }
+        stopListeningLocked();
+        sVoiceResultSent = false;
+        try {
+            final Context app = ctx.getApplicationContext();
+            sRecognizer = SpeechRecognizer.createSpeechRecognizer(app);
+            sRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(android.os.Bundle params) { sListening = true; }
+                @Override public void onBeginningOfSpeech() { }
+                @Override public void onRmsChanged(float rmsdB) { }
+                @Override public void onBufferReceived(byte[] buffer) { }
+                @Override public void onEndOfSpeech() { sListening = false; }
+                @Override public void onError(int error) {
+                    Log.w("YibanPlatform", "ASR error=" + error);
+                    fireVoiceResult("");   // 认不出是常态，降级为按钮
+                }
+                @Override public void onResults(android.os.Bundle results) {
+                    ArrayList<String> matches = results.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION);
+                    fireVoiceResult(matches == null || matches.isEmpty()
+                            ? "" : matches.get(0));
+                }
+                @Override public void onPartialResults(android.os.Bundle partial) { }
+                @Override public void onEvent(int eventType, android.os.Bundle params) { }
+            });
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN");
+            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+            sRecognizer.startListening(intent);
+            // 3 秒没出结果就放弃，绝不把提醒流程卡住（接口冻结清单规则 2）。
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (!sVoiceResultSent) {
+                    Log.w("YibanPlatform", "ASR timeout 3s -> fallback to buttons");
+                    fireVoiceResult("");
+                }
+            }, 3000);
+        } catch (Throwable t) {
+            Log.w("YibanPlatform", "startListening failed: " + t);
+            fireVoiceResult("");
+        }
+    }
+
+    /** 只回传一次结果，随后释放识别器，避免连点产生多次确认。 */
+    private static void fireVoiceResult(String text) {
+        if (sVoiceResultSent) return;
+        sVoiceResultSent = true;
+        sListening = false;
+        try {
+            onVoiceResult(text == null ? "" : text);
+        } catch (Throwable ignored) {
+            // native 回调还没注册（如桌面/dex 未加载）时静默，不影响按钮确认。
+        }
+        stopListeningLocked();
+    }
+
+    public static synchronized void stopListening() {
+        stopListeningLocked();
+    }
+
+    private static void stopListeningLocked() {
+        sListening = false;
+        if (sRecognizer != null) {
+            try {
+                sRecognizer.stopListening();
+            } catch (Throwable ignored) {
+            }
+            try {
+                sRecognizer.destroy();
+            } catch (Throwable ignored) {
+            }
+            sRecognizer = null;
         }
     }
 
