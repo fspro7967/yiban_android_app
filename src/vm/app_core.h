@@ -239,6 +239,8 @@ private:
     // 暂停期内已到/将到点的待办提醒打 paused 标记（不弹、不升级、不算漏服）。
     // 同时负责"缩短暂停"时把不该暂停的标记去掉。
     void applyPauseWindow();
+    // 恢复提醒（手动恢复 / 暂停到期）共用的口径：有效窗口没过的解除 paused。
+    void releasePausedAfterWindow(qint64 nowMs);
 
     // ---- 本地持久化（SQLite）----
     // 只落真实数据域的整份快照；演示域仍是内存快照（重启即重置，符合 README 的约定）。

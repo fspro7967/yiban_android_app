@@ -767,6 +767,10 @@ void DeviceVM::rescheduleAlarms()
             || state == QStringLiteral("notified") || state == QStringLiteral("escalated")) {
             continue;
         }
+        // 暂停期间到点的不注册系统闹钟：前台 onTick 的跳过管不到 App 被杀/在后台时
+        // 由 AlarmManager 直接触发的响铃，不在这里拦就等于 R1-7 的"不弹"没做。
+        if (occ.value(QStringLiteral("paused")).toBool())
+            continue;
 
         qint64 due = occ.value(QStringLiteral("dueTs")).toLongLong();
         if (state == QStringLiteral("snoozed")) {

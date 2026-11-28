@@ -449,6 +449,9 @@ void AppCore::onTick()
     if (m_pauseUntilMs > 0 && m_nowMs >= m_pauseUntilMs) {
         m_pauseUntilMs = 0;
         m_pauseStartMs = 0;
+        // 到期自动恢复要和手动恢复同一口径：窗口还没过的提醒解除"已暂停"，
+        // 否则这轮到点后它就永久停在暂停里，同一时刻手动点恢复却会响。
+        releasePausedAfterWindow(m_nowMs);
         logOperation(QStringLiteral("提醒"), QStringLiteral("暂停到期，自动恢复"));
         emit pausedChanged();
         schedulePersist();
@@ -1196,6 +1199,10 @@ bool AppCore::undoOccurrence(qint64 occurrenceId, QString *error)
         occ[QStringLiteral("escalationLevel")] = 0;
     }
     m_occurrences[index] = occ;
+    // 暂停中确认后又撤销：确认把 paused 清掉了，撤销回到"待确认"时要重新进暂停，
+    // 否则它会接着走升级链，在暂停期把家人叫起来。
+    if (paused())
+        applyPauseWindow();
     appendEvent(occurrenceId, QStringLiteral("undo"), QString());
     logOperation(QStringLiteral("提醒"),
                  QStringLiteral("撤销，恢复为%1：%2")
@@ -1856,7 +1863,20 @@ bool AppCore::resumeReminders()
     // 恢复时看"有效窗口"而不是"是否已经到点"：窗口还没过的照常提醒
     //（9:10 的药、30 分钟窗口，9:12 恢复还能响）；窗口已经过去的保持
     // "已暂停"，不补弹（住院一周回家不该一次炸出 7 条）。
-    const qint64 now = clockNowMs();
+    releasePausedAfterWindow(clockNowMs());
+
+    logOperation(QStringLiteral("提醒"), QStringLiteral("恢复提醒"));
+    emit pausedChanged();
+    emit occurrencesChanged();
+    emit currentChanged();
+    schedulePersist();
+    return true;
+}
+
+// 恢复（手动）和暂停到期（自动）共用的口径：只有"有效窗口还没过"的提醒
+// 才解除暂停，窗口已经过去的保持"已暂停"、不补弹。
+void AppCore::releasePausedAfterWindow(qint64 nowMs)
+{
     for (int i = 0; i < m_occurrences.size(); ++i) {
         QVariantMap occ = m_occurrences.at(i).toMap();
         if (!occ.value(QStringLiteral("paused")).toBool())
@@ -1866,18 +1886,11 @@ bool AppCore::resumeReminders()
                                              : occ.value(QStringLiteral("dueTs")).toLongLong();
         const qint64 windowMs =
             static_cast<qint64>(qMax(1, occ.value(QStringLiteral("windowMin")).toInt())) * 60 * 1000;
-        if (dueAt + windowMs <= now)
+        if (dueAt + windowMs <= nowMs)
             continue;
         occ[QStringLiteral("paused")] = false;
         m_occurrences[i] = occ;
     }
-
-    logOperation(QStringLiteral("提醒"), QStringLiteral("恢复提醒"));
-    emit pausedChanged();
-    emit occurrencesChanged();
-    emit currentChanged();
-    schedulePersist();
-    return true;
 }
 
 void AppCore::applyPauseWindow()
@@ -1901,7 +1914,9 @@ void AppCore::applyPauseWindow()
             shouldPause = dueAt <= until;
         } else if (state == QStringLiteral("pending") || state == QStringLiteral("snoozed")) {
             // 下界：暂停开始前就欠着的 pending 不标暂停，否则等于把漏服抹掉了。
-            shouldPause = dueAt >= m_pauseStartMs && dueAt <= until;
+            // 上界不含等号：暂停中点"推迟"会把时间恰好设成暂停截止时刻，
+            // 用 <= 的话下一次重排（新建/改计划、同步）又会把它标回 paused，永远不响。
+            shouldPause = dueAt >= m_pauseStartMs && dueAt < until;
         }
 
         const bool currentlyPaused = occ.value(QStringLiteral("paused")).toBool();

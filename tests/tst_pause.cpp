@@ -72,6 +72,10 @@ private slots:
     void prePauseDebtNotPaused();
     void resumeWithinWindowStillFires();
     void snoozeDuringPauseFiresAfterPause();
+    // 第二轮 review 的第 2~4 条
+    void snoozeDuringPauseSurvivesRebuild();
+    void pauseExpiryReleasesWithinWindow();
+    void undoDuringPauseStaysPaused();
 };
 
 void PauseTest::init()
@@ -339,6 +343,74 @@ void PauseTest::snoozeDuringPauseFiresAfterPause()
     QVERIFY(!occurrenceFor(planId).value(QStringLiteral("paused")).toBool());
 
     core->setClockForTests(at(10, 0));
+    core->tickForTests();
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("notified"));
+}
+
+// 2. 暂停中推迟后，只要发生一次重排（新建/改计划、同步），这条不能又被标回暂停
+void PauseTest::snoozeDuringPauseSurvivesRebuild()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = core->createPlan(planAt(9, 10));
+    QVERIFY(planId > 0);
+    QVERIFY(core->pauseUntil(at(10, 0)));
+
+    core->setClockForTests(at(9, 10));
+    core->tickForTests();
+    const qint64 occId = occurrenceFor(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+    QVERIFY(core->snooze(occId));
+
+    // 重排一次：新建无关计划会走 rebuildToday → applyPauseWindow
+    QVERIFY(core->createPlan(planAt(12, 0)) > 0);
+    QVERIFY(!occurrenceFor(planId).value(QStringLiteral("paused")).toBool());
+
+    core->setClockForTests(at(10, 1));
+    core->tickForTests();
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("notified"));
+}
+
+// 3. 暂停到期自动恢复要和手动恢复同口径：窗口还没过的提醒重新回到调度
+void PauseTest::pauseExpiryReleasesWithinWindow()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = core->createPlan(planAt(9, 10));
+    QVERIFY(planId > 0);
+    QVERIFY(core->pauseUntil(at(9, 15)));
+
+    core->setClockForTests(at(9, 17));
+    core->tickForTests();
+
+    QVERIFY(!core->paused());
+    const QVariantMap occ = occurrenceFor(planId);
+    QVERIFY(!occ.value(QStringLiteral("paused")).toBool());
+    QCOMPARE(occ.value(QStringLiteral("state")).toString(), QStringLiteral("notified"));
+}
+
+// 4. 暂停中确认后又撤销：要重新回到暂停，不能接着走升级链通知家人
+void PauseTest::undoDuringPauseStaysPaused()
+{
+    AppCore *core = AppCore::instance();
+    const qint64 planId = core->createPlan(planAt(9, 10));
+    QVERIFY(planId > 0);
+
+    core->setClockForTests(at(9, 10));
+    core->tickForTests();
+    const qint64 occId = occurrenceFor(planId).value(QStringLiteral("occurrenceId")).toLongLong();
+    QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
+             QStringLiteral("notified"));
+
+    core->setClockForTests(at(9, 12));
+    QVERIFY(core->pauseUntil(at(23, 0)));
+    QVERIFY(occurrenceFor(planId).value(QStringLiteral("paused")).toBool());
+
+    QVERIFY(core->confirm(occId));
+    QVERIFY(!occurrenceFor(planId).value(QStringLiteral("paused")).toBool());
+    QVERIFY(core->undoOccurrence(occId));
+    QVERIFY(occurrenceFor(planId).value(QStringLiteral("paused")).toBool());
+
+    core->setClockForTests(at(9, 40));
     core->tickForTests();
     QCOMPARE(occurrenceFor(planId).value(QStringLiteral("state")).toString(),
              QStringLiteral("notified"));
