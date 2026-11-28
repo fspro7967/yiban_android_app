@@ -1,5 +1,7 @@
 #include "reminder_vm.h"
 
+#include <QDateTime>
+
 #include "app_core.h"
 #include "facade_errors.h"
 
@@ -16,6 +18,7 @@ ReminderVM::ReminderVM(QObject *parent)
     connect(core, &AppCore::escalationChanged, this, &ReminderVM::escalationChanged);
     // 等级变化也要刷新 current：QML 从 current.escalationLevel 读状态。
     connect(core, &AppCore::escalationChanged, this, &ReminderVM::currentChanged);
+    connect(core, &AppCore::pausedChanged, this, &ReminderVM::pausedChanged);
 }
 
 QVariantList ReminderVM::today() const
@@ -130,4 +133,37 @@ void ReminderVM::sos()
 void ReminderVM::triggerDemoReminder()
 {
     AppCore::instance()->triggerDemoReminder();
+}
+
+bool ReminderVM::paused() const
+{
+    return AppCore::instance()->paused();
+}
+
+qint64 ReminderVM::pauseUntilMs() const
+{
+    return AppCore::instance()->pauseUntilMs();
+}
+
+QString ReminderVM::pauseUntilText() const
+{
+    const qint64 until = AppCore::instance()->pauseUntilMs();
+    if (until <= 0)
+        return QString();
+    return QDateTime::fromMSecsSinceEpoch(until).toString(QStringLiteral("MM-dd HH:mm"));
+}
+
+bool ReminderVM::pauseUntil(qint64 untilMs)
+{
+    return AppCore::instance()->pauseUntil(untilMs);
+}
+
+bool ReminderVM::pauseForMinutes(int minutes)
+{
+    return AppCore::instance()->pauseForMinutes(minutes);
+}
+
+bool ReminderVM::resumeReminders()
+{
+    return AppCore::instance()->resumeReminders();
 }

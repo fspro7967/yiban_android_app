@@ -157,5 +157,74 @@ events(event_id TEXT PRIMARY KEY, occurrence_id INTEGER, action TEXT, ts INTEGER
 | `tests/tst_data_layer.cpp`（4 例） | 同步队列生命周期/幂等、升级链 1→2→3、跨天归档与统计 |
 | `tests/tst_restart.cpp`（1 例，10 轮） | 同库连续 10 次"启动→校验→写一条→退出"，验证落盘与恢复 |
 
-完整 `ctest`：**6/6 通过**（原 `facade_app_core` 24 条契约一字未改、原样通过）。
+完整 `ctest`：**9/9 通过**（原 `facade_app_core` 24 条契约一字未改、原样通过）。
+说明：其中 `sync_flow` 是 B2 加的；`trends` / `pause_mode` 是本轮（B1-1 / B1-2）加的。
+以 `ctest -N` 的输出为准，组数变化时记得同步这一行。
+
+---
+
+## 9. 2026-11-27 增量：统计趋势（I4）与暂停模式（B1-1 / B1-2）
+
+对应 `1124TODO` 里标了"这周做完"的 B1 项。接口登记见 `agent/接口冻结清单.md` 附录 A.3 / A.4。
+
+### 9.1 统计趋势（B1-1，I4）
+
+- `AppCore::recordTrend(type, days)`：按自然日聚合，返回 `days` 项 `{date, value}`，
+  **空日补 0**、最后一项是今天；
+- 单位：`water` 杯/天、`activity` 分钟/天、`sleep` 分钟/天；
+- 睡眠按"起床那天"归日（每条 `sleep_end` 匹配它之前最近的 `sleep_start`），
+  所以昨晚 22:40 → 今早 06:30 的 470 分钟算在今天；
+- `RecordVM` 暴露 `trends7` / `trends30` 两个只读属性（`{water, sleep, activity}`）和
+  `trend(type, days)`；都挂 `NOTIFY recordsChanged`，记录一变就刷新。
+
+> 没有按 TODO 建议直接下沉 SQL：`records` 表按行存 JSON，睡眠还要跨零点配对，
+> 硬写 SQL 容易在时区/配对边界上出错。B1-8（下沉 SQL）仍留在 P2，届时以现有单测做等价性校验。
+
+### 9.2 暂停模式（B1-2，R1-7 / I5 的一部分）
+
+- 设备级开关 `m_pauseUntilMs`，落 `meta.pause_until_ms`，**重启仍处于暂停**，到期自动恢复；
+- 暂停期内到点的 pending/snoozed 提醒打 `paused = true`：`onTick` 直接跳过，
+  **不弹、不升级、不产生 missed**；
+- 统计口径：`tally()` 把 paused 单独计数，**不进分母**、不算漏服；`stats(n)` 每天多一个
+  `paused` 键；`todayTotal/todayDone/pendingCount` 同样排除 paused（首页和统计页口径一致）；
+- 手动恢复只放开"还没到点"的提醒，暂停期间已经过去的不补弹；
+- 暂停 / 恢复各记一条操作日志；`resetStorage()` 会清掉暂停。
+
+### 9.3 测试
+
+| 新增/改动 | 覆盖 |
+| --- | --- |
+| `tests/tst_trends.cpp`（4 例） | 7/30 长度与空日补 0、睡眠跨零点归日、跨天窗口后移、记录变化刷新 |
+| `tests/tst_pause.cpp`（4 例） | 暂停不弹/不进 pending、暂停结束后照常、手动恢复、统计不算漏服 |
+| `tests/tst_restart.cpp`（扩展） | 第 0 轮设暂停，后面 9 轮重启都验证暂停仍在 |
+
+完整 `ctest`：**9/9 通过**。
+
+### 9.4 2026-11-27 review 后的修复（10 条）
+
+review 指出暂停/趋势还有 9 个行为 bug + 1 个接入问题，已全部修掉并补了用例：
+
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| 1 | 暂停前已在响的提醒照样升级、记漏服 | `applyPauseWindow()` 也处理 `notified`：清 `escalationLevel`/`notifiedAtTs`；`advanceEscalation()` 遇 `paused` 直接返回 |
+| 2 | 首页"下一条"仍显示暂停中的提醒 | `currentOccurrence()` 跳过 `paused`；`publicOccurrence()` 输出 `paused` 且 `canConfirm/canSnooze=false` |
+| 3 | 缩短暂停后，后面的提醒永远不弹 | `applyPauseWindow()` 会对"落在新截止之后且还没到点"的条目**解除** `paused` |
+| 4 | 运行期到期不发信号、不清值 | `onTick()` 检测到期：清零 `pauseUntilMs`/`pauseStartMs`，发 `pausedChanged` 并落库；`resetStorage()` 也发 |
+| 5 | 暂停期间手动确认不算完成 | `confirm()` 清 `paused`；`snooze()` 在暂停中把 `snoozeUntilTs` 推到暂停结束后并清 `paused` |
+| 6 | 开启暂停会把暂停前欠着的提醒一并抹掉 | 新增 `m_pauseStartMs`（落库 `meta.pause_start_ms`），只标 `dueAt >= 起点的` |
+| 7 | 手动恢复没考虑有效窗口 | 改为 `dueAt + windowMin <= now` 才保持暂停（窗口还在就能继续提醒） |
+| 8 | 跨零点趋势不刷新 | `onTick()` 跨天分支补发 `recordsChanged()`（趋势属性挂在这个信号上） |
+| 9 | 睡眠配对可复用 start、无上限，会算出几十小时 | 改为按时间顺序**成对消费** start/end（每条 start 只用一次），并限制单次 ≤ 16 小时 |
+
+新增/扩充用例后：`pause_mode` 12 例、`trends` 6 例；完整 `ctest` 仍 **9/9 通过**。
+
+### 9.5 接入状态（第 10 条）
+
+数据层已就绪，但 **QML 侧还没接**：`qml/Stub.qml` 里 `pauseReal` / `trendsReal` 仍是 `false`，
+页面用的还是 Stub 的假数据。QML 归 F1，B1 不改；接法写在 `agent/接口冻结清单.md` A.4 末尾：
+
+- `trendsReal: true` → `trend(kind, days)` 转发 `RecordVM.trend(kind, days)`；
+- `pauseReal: true` → `paused` / `pauseUntilMs` / `pauseUntil(ms)` / `resume()` 转发 `ReminderVM` 同名成员。
+
+在 F1 接线之前，管理后台点暂停**不会**影响 C++ 侧的调度（Stub 只改自己的属性）。
 

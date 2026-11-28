@@ -24,6 +24,10 @@ class ReminderVM : public QObject
     Q_PROPERTY(qint64 nowMs READ nowMs NOTIFY nowChanged)
     Q_PROPERTY(bool autoReminders READ autoReminders WRITE setAutoReminders
                    NOTIFY autoRemindersChanged)
+    // I5（一部分）：暂停模式。暂停期间到点的提醒不弹、不升级、不算漏服。
+    Q_PROPERTY(bool paused READ paused NOTIFY pausedChanged)
+    Q_PROPERTY(qint64 pauseUntilMs READ pauseUntilMs NOTIFY pausedChanged)
+    Q_PROPERTY(QString pauseUntilText READ pauseUntilText NOTIFY pausedChanged)
 
 public:
     explicit ReminderVM(QObject *parent = nullptr);
@@ -39,6 +43,14 @@ public:
     qint64 nowMs() const;
     bool autoReminders() const;
     void setAutoReminders(bool on);
+
+    // ---- 暂停模式（R1-7）----
+    bool paused() const;
+    qint64 pauseUntilMs() const;
+    QString pauseUntilText() const;      // "11-28 08:00"，未暂停为空
+    Q_INVOKABLE bool pauseUntil(qint64 untilMs);
+    Q_INVOKABLE bool pauseForMinutes(int minutes);
+    Q_INVOKABLE bool resumeReminders();
 
     // 只发意图，不返回状态；结果通过 today/current 的变化与 commandRejected 通知。
     Q_INVOKABLE void confirm(qint64 occurrenceId);
@@ -58,6 +70,7 @@ signals:
     // 升级链（I2）：level 0=未到点，1=已提醒，2=语音加强，3=通知家人。
     // QML 用它替换 ReminderScreen 里写死的 120 秒计时器。
     void escalationChanged(qint64 occurrenceId, int level);
+    void pausedChanged();
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
 

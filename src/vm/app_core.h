@@ -140,6 +140,19 @@ public:
     int sleepMinutes() const;
     int activityMinutes() const;
 
+    // ---- 统计趋势（I4）----
+    // 返回 days 天序列，每项 {date, value}：空日补 0，最后一项是今天。
+    // type: "water"（杯/天）/ "sleep"（分钟/天，记在起床那天）/ "activity"（分钟/天）。
+    QVariantList recordTrend(const QString &type, int days) const;
+
+    // ---- 暂停模式（R1-7，I5 的一部分）----
+    // 暂停期间到点的提醒标 paused：不弹、不升级、不算漏服；到期或手动关闭后恢复正常调度。
+    qint64 pauseUntilMs() const { return m_pauseUntilMs; }
+    bool paused() const;
+    bool pauseUntil(qint64 untilMs);      // 必须晚于"现在"，否则返回 false
+    bool pauseForMinutes(int minutes);
+    bool resumeReminders();
+
     // ---- 档案（配对接口返回后由 B2 写入）----
     QString elderName() const { return m_elderName; }
     QString caregiverName() const { return m_caregiverName; }
@@ -173,6 +186,8 @@ signals:
     void toast(const QString &text);
     // 升级等级变化（I2：0=未到点，1=已提醒，2=语音加强，3=通知家人）。
     void escalationChanged(qint64 occurrenceId, int level);
+    // 暂停开始 / 恢复 / 到期（设备级，不分真实域与演示域）。
+    void pausedChanged();
     // 事件日志变化（新事件入队 / 事件被 ack）：SyncVM 据此触发上传
     void eventsChanged();
 
@@ -221,6 +236,11 @@ private:
     int advanceEscalation(int index);
     // 给发生记录补上升级等级与"下一级还有多少秒"（I2 对外字段）。
     QVariantMap withEscalationDeadline(QVariantMap occ) const;
+    // 暂停期内已到/将到点的待办提醒打 paused 标记（不弹、不升级、不算漏服）。
+    // 同时负责"缩短暂停"时把不该暂停的标记去掉。
+    void applyPauseWindow();
+    // 恢复提醒（手动恢复 / 暂停到期）共用的口径：有效窗口没过的解除 paused。
+    void releasePausedAfterWindow(qint64 nowMs);
 
     // ---- 本地持久化（SQLite）----
     // 只落真实数据域的整份快照；演示域仍是内存快照（重启即重置，符合 README 的约定）。
@@ -235,6 +255,11 @@ private:
     bool m_persistPending = false;
     // 0 = 用系统时间；>0 = 用例注入的"现在"（毫秒时间戳）。
     qint64 m_clockOverrideMs = 0;
+    // 暂停到什么时候（毫秒时间戳）；0 = 未暂停。落库到 meta，跨重启保留。
+    qint64 m_pauseUntilMs = 0;
+    // 本次暂停从什么时候开始：只暂停"开始之后到点"的提醒，避免把暂停前
+    // 就欠着的 pending 一并抹成"已暂停"（否则当天完成率反而变高）。
+    qint64 m_pauseStartMs = 0;
     QString m_dbPath;
 
     int indexOfOccurrence(qint64 id) const;

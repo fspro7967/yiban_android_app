@@ -437,9 +437,25 @@ void AppCore::onTick()
         m_skippedOccurrences.clear();
         m_day = today;
         rebuildToday();
+        // 跨天：趋势窗口整体后移一天，标题上的"今天"也变了。
+        // 趋势属性挂在 recordsChanged 上，这里必须补发一次，否则统计页会停在昨天。
+        emit recordsChanged();
     }
 
     m_nowMs = clockNowMs();
+
+    // 暂停到期：自动恢复并通知 UI（否则 QML 会一直显示"已暂停到…"；
+    // 也不清值的话，之后新建的过期计划会被误标 paused）。
+    if (m_pauseUntilMs > 0 && m_nowMs >= m_pauseUntilMs) {
+        m_pauseUntilMs = 0;
+        m_pauseStartMs = 0;
+        // 到期自动恢复要和手动恢复同一口径：窗口还没过的提醒解除"已暂停"，
+        // 否则这轮到点后它就永久停在暂停里，同一时刻手动点恢复却会响。
+        releasePausedAfterWindow(m_nowMs);
+        logOperation(QStringLiteral("提醒"), QStringLiteral("暂停到期，自动恢复"));
+        emit pausedChanged();
+        schedulePersist();
+    }
     emit nowChanged();
 
     bool changed = false;
@@ -450,6 +466,9 @@ void AppCore::onTick()
     const int nowMinutes = nowTime.hour() * 60 + nowTime.minute();
     for (const QVariant &entry : std::as_const(m_occurrences)) {
         const QVariantMap occ = entry.toMap();
+        // 暂停期间到点的提醒：不弹、不升级、不算漏服。
+        if (occ.value(QStringLiteral("paused")).toBool())
+            continue;
         const QString state = occ.value(QStringLiteral("state")).toString();
         const qint64 id = occ.value(QStringLiteral("occurrenceId")).toLongLong();
 
@@ -537,8 +556,15 @@ QVariantMap AppCore::tally(const QVariantList &occurrences, bool dayClosed)
     int total = 0;
     int done = 0;
     int missed = 0;
+    int paused = 0;
     for (const QVariant &entry : occurrences) {
-        const QString state = entry.toMap().value(QStringLiteral("state")).toString();
+        const QVariantMap occ = entry.toMap();
+        const QString state = occ.value(QStringLiteral("state")).toString();
+        // 暂停的提醒不算进分母，也不算漏服：住院/外出期间不该拉低完成率。
+        if (occ.value(QStringLiteral("paused")).toBool()) {
+            ++paused;
+            continue;
+        }
         ++total;
         if (state == QStringLiteral("confirmed"))
             ++done;
@@ -549,6 +575,7 @@ QVariantMap AppCore::tally(const QVariantList &occurrences, bool dayClosed)
     out[QStringLiteral("total")] = total;
     out[QStringLiteral("done")] = done;
     out[QStringLiteral("missed")] = missed;
+    out[QStringLiteral("paused")] = paused;
     return out;
 }
 
@@ -603,10 +630,14 @@ void AppCore::rebuildTodayFrom(const QVariantList &source)
                 // 丢了 notifiedAtTs 就会从"现在"重新计时（被杀再打开又从 2 分钟倒数）。
                 occ[QStringLiteral("notifiedAtTs")] = it->value(QStringLiteral("notifiedAtTs"));
                 occ[QStringLiteral("escalationLevel")] = it->value(QStringLiteral("escalationLevel"));
+                // 暂停标记也要带过来，否则改一次计划就把"已暂停"重新变回待提醒。
+                occ[QStringLiteral("paused")] = it->value(QStringLiteral("paused"));
             }
             m_occurrences.append(occ);
         }
     }
+    // 暂停期内新建/重排出来的提醒同样要打 paused，不然会照常弹。
+    applyPauseWindow();
     emit occurrencesChanged();
     emit currentChanged();
 }
@@ -719,11 +750,15 @@ QVariantMap AppCore::publicOccurrence(const QVariantMap &plan, const QVariantMap
     const bool allowLate = planAllowsLate(plan);
     // 过时 = 已经错过（窗口结束）。不允许过时完成的计划（如随餐药）错过后不能再补点完成。
     const bool late = state == QStringLiteral("missed");
+    const bool pausedNow = occ.value(QStringLiteral("paused")).toBool();
     out[QStringLiteral("allowLate")] = allowLate;
     out[QStringLiteral("isLate")] = late;
-    out[QStringLiteral("canConfirm")] = state != QStringLiteral("confirmed") && (allowLate || !late);
-    out[QStringLiteral("canSnooze")] = state != QStringLiteral("confirmed")
-        && snoozeCount < kMaxSnooze;
+    out[QStringLiteral("paused")] = pausedNow;
+    // 暂停中的提醒不给"完成/推迟"入口：老人既没看到提醒，就不该在暂停期里被催着确认。
+    out[QStringLiteral("canConfirm")] =
+        !pausedNow && state != QStringLiteral("confirmed") && (allowLate || !late);
+    out[QStringLiteral("canSnooze")] =
+        !pausedNow && state != QStringLiteral("confirmed") && snoozeCount < kMaxSnooze;
     // 升级链对外字段（I2）：0=未到点，1=已提醒，2=语音加强，3=通知家人。
     out[QStringLiteral("escalationLevel")] = occ.value(QStringLiteral("escalationLevel")).toInt();
     return out;
@@ -831,6 +866,10 @@ QVariantMap AppCore::currentOccurrence() const
 
     for (const QVariant &entry : m_occurrences) {
         QVariantMap occ = entry.toMap();
+        // 暂停中的提醒不能占着首页"下一条"：否则会出现"暂停中"横幅和
+        // "该做了"大卡同时存在的矛盾画面。
+        if (occ.value(QStringLiteral("paused")).toBool())
+            continue;
         const QString state = occ.value(QStringLiteral("state")).toString();
         if (state == QStringLiteral("confirmed") || state == QStringLiteral("missed"))
             continue;
@@ -894,6 +933,9 @@ int AppCore::advanceEscalation(int index)
         return 0;
     QVariantMap occ = m_occurrences.at(index).toMap();
     const qint64 occurrenceId = occ.value(QStringLiteral("occurrenceId")).toLongLong();
+    // 已暂停的提醒不再推进升级链：暂停期间不能因为"没确认"升到 3 级去打电话。
+    if (occ.value(QStringLiteral("paused")).toBool())
+        return 0;
     if (occ.value(QStringLiteral("state")).toString() != QStringLiteral("notified"))
         return occ.value(QStringLiteral("escalationLevel")).toInt();
 
@@ -1066,6 +1108,8 @@ bool AppCore::confirm(qint64 occurrenceId, QString *error)
     occ[QStringLiteral("snoozeUntilTs")] = 0;
     occ[QStringLiteral("escalationLevel")] = 0;
     occ[QStringLiteral("notifiedAtTs")] = 0;
+    // 暂停期手动确认：这条算完成，不再算"已暂停"（否则 stats 里 confirmed 会是 0）。
+    occ[QStringLiteral("paused")] = false;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("confirm"), QString());
     logOperation(QStringLiteral("提醒"), QStringLiteral("确认完成：%1").arg(occurrenceLabel(occ)));
@@ -1098,11 +1142,17 @@ bool AppCore::snooze(qint64 occurrenceId, QString *error)
         return false;
     }
 
+    qint64 snoozeUntil = m_nowMs + kSnoozeMinutes * 60 * 1000;
+    if (paused()) {
+        // 暂停中点"推迟"：推到暂停结束之后，不补弹、也不会因为 paused 标记永远不响。
+        snoozeUntil = qMax(snoozeUntil, m_pauseUntilMs);
+    }
     occ[QStringLiteral("state")] = QStringLiteral("snoozed");
     occ[QStringLiteral("snoozeCount")] = used + 1;
-    occ[QStringLiteral("snoozeUntilTs")] = m_nowMs + kSnoozeMinutes * 60 * 1000;
+    occ[QStringLiteral("snoozeUntilTs")] = snoozeUntil;
     occ[QStringLiteral("escalationLevel")] = 0;
     occ[QStringLiteral("notifiedAtTs")] = 0;
+    occ[QStringLiteral("paused")] = false;
     m_occurrences[index] = occ;
     appendEvent(occurrenceId, QStringLiteral("snooze"), QString());
     logOperation(QStringLiteral("提醒"),
@@ -1149,6 +1199,10 @@ bool AppCore::undoOccurrence(qint64 occurrenceId, QString *error)
         occ[QStringLiteral("escalationLevel")] = 0;
     }
     m_occurrences[index] = occ;
+    // 暂停中确认后又撤销：确认把 paused 清掉了，撤销回到"待确认"时要重新进暂停，
+    // 否则它会接着走升级链，在暂停期把家人叫起来。
+    if (paused())
+        applyPauseWindow();
     appendEvent(occurrenceId, QStringLiteral("undo"), QString());
     logOperation(QStringLiteral("提醒"),
                  QStringLiteral("撤销，恢复为%1：%2")
@@ -1232,8 +1286,10 @@ int AppCore::todayDone() const
 {
     int n = 0;
     for (const QVariant &entry : m_occurrences) {
-        if (entry.toMap().value(QStringLiteral("state")).toString()
-            == QStringLiteral("confirmed"))
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("paused")).toBool())
+            continue;
+        if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("confirmed"))
             ++n;
     }
     return n;
@@ -1241,15 +1297,22 @@ int AppCore::todayDone() const
 
 int AppCore::todayTotal() const
 {
-    return m_occurrences.size();
+    int n = 0;
+    for (const QVariant &entry : m_occurrences) {
+        if (!entry.toMap().value(QStringLiteral("paused")).toBool())
+            ++n;
+    }
+    return n;
 }
 
 int AppCore::pendingCount() const
 {
     int n = 0;
     for (const QVariant &entry : m_occurrences) {
-        if (entry.toMap().value(QStringLiteral("state")).toString()
-            != QStringLiteral("confirmed"))
+        const QVariantMap occ = entry.toMap();
+        if (occ.value(QStringLiteral("paused")).toBool())
+            continue;
+        if (occ.value(QStringLiteral("state")).toString() != QStringLiteral("confirmed"))
             ++n;
     }
     return n;
@@ -1669,6 +1732,229 @@ QVariantList AppCore::records() const
     return m_records;
 }
 
+// ---------------------------------------------------------------------------
+// I4 统计趋势：按自然日聚合记录，空日补 0，最后一项固定是今天。
+// 睡眠记在"起床"那天：每条 sleep_end 找它之前最近的一条 sleep_start，
+// 所以跨零点的睡眠（昨晚 22:40 → 今早 06:30）算在今天。
+// ---------------------------------------------------------------------------
+
+QVariantList AppCore::recordTrend(const QString &type, int days) const
+{
+    const int span = qBound(1, days, 365);
+    const QDate today = clockToday();
+    QHash<QString, double> byDay;
+
+    if (type == QStringLiteral("sleep")) {
+        QList<qint64> starts;
+        QList<qint64> ends;
+        for (const QVariant &entry : m_records) {
+            const QVariantMap rec = entry.toMap();
+            const QString kind = rec.value(QStringLiteral("type")).toString();
+            const qint64 at = rec.value(QStringLiteral("at")).toLongLong();
+            if (kind == QStringLiteral("sleep_start"))
+                starts.append(at);
+            else if (kind == QStringLiteral("sleep_end"))
+                ends.append(at);
+        }
+        std::sort(starts.begin(), starts.end());
+        std::sort(ends.begin(), ends.end());
+
+        // 每条 sleep_end 只用一次 sleep_start，而且时长不超过 16 小时：
+        // 否则"周三忘了点入睡、只点了起床"会把它和周一那次入睡配对，算出几十小时。
+        constexpr qint64 kMaxSleepMs = 16LL * 3600 * 1000;
+        QList<bool> consumed(starts.size(), false);
+        for (qint64 end : ends) {
+            int bestIndex = -1;
+            qint64 bestStart = 0;
+            for (int i = 0; i < starts.size(); ++i) {
+                if (consumed.at(i))
+                    continue;
+                const qint64 candidate = starts.at(i);
+                if (candidate >= end)
+                    break; // 已排序：后面只会更晚
+                if (end - candidate > kMaxSleepMs)
+                    continue; // 隔太久的不配成一次睡眠
+                if (candidate >= bestStart) {
+                    bestStart = candidate;
+                    bestIndex = i;
+                }
+            }
+            if (bestIndex < 0)
+                continue;
+            consumed[bestIndex] = true;
+            const QDate day = QDateTime::fromMSecsSinceEpoch(end).date();
+            byDay[day.toString(Qt::ISODate)] += double(end - bestStart) / 60000.0;
+        }
+    } else {
+        const QString kind = type == QStringLiteral("water") ? QStringLiteral("water")
+                                                            : QStringLiteral("activity");
+        for (const QVariant &entry : m_records) {
+            const QVariantMap rec = entry.toMap();
+            if (rec.value(QStringLiteral("type")).toString() != kind)
+                continue;
+            const QDate day =
+                QDateTime::fromMSecsSinceEpoch(rec.value(QStringLiteral("at")).toLongLong()).date();
+            byDay[day.toString(Qt::ISODate)] += rec.value(QStringLiteral("value")).toDouble();
+        }
+    }
+
+    QVariantList out;
+    out.reserve(span);
+    for (int i = span - 1; i >= 0; --i) {
+        const QDate day = today.addDays(-i);
+        const double value = byDay.value(day.toString(Qt::ISODate), 0.0);
+        QVariantMap item;
+        item[QStringLiteral("date")] = day.toString(Qt::ISODate);
+        item[QStringLiteral("value")] =
+            type == QStringLiteral("sleep") ? QVariant(qRound(value)) : QVariant(value);
+        out.append(item);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// 暂停模式（R1-7）：设备级开关。暂停期间到点的提醒打 paused 标记，
+// 不弹、不升级、不算漏服；恢复后只对"还没到点"的提醒照常调度，
+// 不补弹已经过去的，避免回家后一次性炸出一堆提醒。
+// ---------------------------------------------------------------------------
+
+bool AppCore::paused() const
+{
+    return m_pauseUntilMs > 0 && clockNowMs() < m_pauseUntilMs;
+}
+
+bool AppCore::pauseUntil(qint64 untilMs)
+{
+    const qint64 now = clockNowMs();
+    if (untilMs <= now)
+        return false;
+
+    // 从"没在暂停"进入暂停：记下起点；在暂停中改截止时间：保留原起点，
+    // 这样"缩短暂停"不会把暂停期间已经过掉的提醒重新算成待办。
+    if (m_pauseUntilMs <= 0 || m_pauseUntilMs <= now)
+        m_pauseStartMs = now;
+    m_pauseUntilMs = untilMs;
+    applyPauseWindow();
+    logOperation(QStringLiteral("提醒"),
+                 QStringLiteral("暂停提醒到 %1")
+                     .arg(QDateTime::fromMSecsSinceEpoch(untilMs)
+                              .toString(QStringLiteral("MM-dd HH:mm"))));
+    emit pausedChanged();
+    emit occurrencesChanged();
+    emit currentChanged();
+    schedulePersist();
+    return true;
+}
+
+bool AppCore::pauseForMinutes(int minutes)
+{
+    if (minutes <= 0)
+        return false;
+    return pauseUntil(clockNowMs() + static_cast<qint64>(minutes) * 60 * 1000);
+}
+
+bool AppCore::resumeReminders()
+{
+    if (m_pauseUntilMs == 0)
+        return false;
+    m_pauseUntilMs = 0;
+    m_pauseStartMs = 0;
+
+    // 恢复时看"有效窗口"而不是"是否已经到点"：窗口还没过的照常提醒
+    //（9:10 的药、30 分钟窗口，9:12 恢复还能响）；窗口已经过去的保持
+    // "已暂停"，不补弹（住院一周回家不该一次炸出 7 条）。
+    releasePausedAfterWindow(clockNowMs());
+
+    logOperation(QStringLiteral("提醒"), QStringLiteral("恢复提醒"));
+    emit pausedChanged();
+    emit occurrencesChanged();
+    emit currentChanged();
+    schedulePersist();
+    return true;
+}
+
+// 恢复（手动）和暂停到期（自动）共用的口径：只有"有效窗口还没过"的提醒
+// 才解除暂停，窗口已经过去的保持"已暂停"、不补弹。
+void AppCore::releasePausedAfterWindow(qint64 nowMs)
+{
+    for (int i = 0; i < m_occurrences.size(); ++i) {
+        QVariantMap occ = m_occurrences.at(i).toMap();
+        if (!occ.value(QStringLiteral("paused")).toBool())
+            continue;
+        const qint64 snoozeUntil = occ.value(QStringLiteral("snoozeUntilTs")).toLongLong();
+        const qint64 dueAt = snoozeUntil > 0 ? snoozeUntil
+                                             : occ.value(QStringLiteral("dueTs")).toLongLong();
+        const qint64 windowMs =
+            static_cast<qint64>(qMax(1, occ.value(QStringLiteral("windowMin")).toInt())) * 60 * 1000;
+        if (dueAt + windowMs <= nowMs)
+            continue;
+        occ[QStringLiteral("paused")] = false;
+        // 暂停时"已经在响"的提醒升级基线被清零，但状态仍是 notified。直接放开
+        // paused 的话它既不会再弹（onTick 只对 pending 调 fireDue、闹钟也跳过
+        // notified），又会从当前时刻重新悄悄升级——老人什么都没听到，家人却被通知。
+        // 所以放回 pending，让下一次 onTick 照常 fireDue：重新弹出、响铃、从头计时。
+        if (occ.value(QStringLiteral("state")).toString() == QStringLiteral("notified")) {
+            occ[QStringLiteral("state")] = QStringLiteral("pending");
+            occ[QStringLiteral("notifiedAtTs")] = 0;
+            occ[QStringLiteral("escalationLevel")] = 0;
+        }
+        m_occurrences[i] = occ;
+    }
+}
+
+void AppCore::applyPauseWindow()
+{
+    const qint64 now = clockNowMs();
+    const qint64 until = m_pauseUntilMs;
+    if (until <= 0)
+        return;
+
+    bool marked = false;
+    for (int i = 0; i < m_occurrences.size(); ++i) {
+        QVariantMap occ = m_occurrences.at(i).toMap();
+        const QString state = occ.value(QStringLiteral("state")).toString();
+        const qint64 snoozeUntil = occ.value(QStringLiteral("snoozeUntilTs")).toLongLong();
+        const qint64 dueAt = snoozeUntil > 0 ? snoozeUntil
+                                             : occ.value(QStringLiteral("dueTs")).toLongLong();
+
+        bool shouldPause = false;
+        if (state == QStringLiteral("notified")) {
+            // 已经在响的提醒：暂停要立刻停下升级链，也不再等它变成 missed。
+            shouldPause = dueAt <= until;
+        } else if (state == QStringLiteral("pending") || state == QStringLiteral("snoozed")) {
+            // 下界：暂停开始前就欠着的 pending 不标暂停，否则等于把漏服抹掉了。
+            // 上界不含等号：暂停中点"推迟"会把时间恰好设成暂停截止时刻，
+            // 用 <= 的话下一次重排（新建/改计划、同步）又会把它标回 paused，永远不响。
+            shouldPause = dueAt >= m_pauseStartMs && dueAt < until;
+        }
+
+        const bool currentlyPaused = occ.value(QStringLiteral("paused")).toBool();
+        if (shouldPause) {
+            if (currentlyPaused)
+                continue;
+            occ[QStringLiteral("paused")] = true;
+            if (state == QStringLiteral("notified")) {
+                // 清掉升级基线：恢复后它只是"已暂停"，不会接着往 3 级冲。
+                occ[QStringLiteral("escalationLevel")] = 0;
+                occ[QStringLiteral("notifiedAtTs")] = 0;
+            }
+            m_occurrences[i] = occ;
+            marked = true;
+            continue;
+        }
+
+        // 缩短暂停后：落在新截止时间之后、且还没到点的，解除暂停。
+        if (currentlyPaused && dueAt > now) {
+            occ[QStringLiteral("paused")] = false;
+            m_occurrences[i] = occ;
+        }
+    }
+
+    if (marked)
+        logOperation(QStringLiteral("提醒"), QStringLiteral("暂停期间到点的提醒记为已暂停"));
+}
+
+
 QVariantList AppCore::stats(int days) const
 {
     // 统一口径：每天 {total, done, missed}；"今天"永远取今天实时的 occurrence，
@@ -1690,11 +1976,13 @@ QVariantList AppCore::stats(int days) const
         int total = 0;
         int done = 0;
         int missed = 0;
+        int paused = 0;
         if (i == 0) {
             const QVariantMap t = tally(m_occurrences, false);
             total = t.value(QStringLiteral("total")).toInt();
             done = t.value(QStringLiteral("done")).toInt();
             missed = t.value(QStringLiteral("missed")).toInt();
+            paused = t.value(QStringLiteral("paused")).toInt();
         } else if (m_demoMode) {
             const int fake = base.at((days - 1 - i) % base.size());
             total = 4;
@@ -1705,6 +1993,7 @@ QVariantList AppCore::stats(int days) const
             total = t.value(QStringLiteral("total")).toInt();
             done = t.value(QStringLiteral("done")).toInt();
             missed = t.value(QStringLiteral("missed")).toInt();
+            paused = t.value(QStringLiteral("paused")).toInt();
         }
         const int rate = total > 0 ? qRound(done * 100.0 / total) : 0;
         const bool showLabel = shown <= 7 || i == first || i == 0 || i % 5 == 0;
@@ -1720,6 +2009,8 @@ QVariantList AppCore::stats(int days) const
         item[QStringLiteral("expected")] = total;
         item[QStringLiteral("confirmed")] = done;
         item[QStringLiteral("missed")] = missed;
+        // 暂停条数单独计：不进分母、不算漏服。
+        item[QStringLiteral("paused")] = paused;
         // 兼容旧展示代码
         item[QStringLiteral("done")] = done;
         item[QStringLiteral("total")] = total;
@@ -2425,6 +2716,8 @@ void AppCore::persistNow()
              && setMeta(QStringLiteral("start_date"), data.startDate.toString(Qt::ISODate))
              && setMeta(QStringLiteral("auto_reminders"),
                         m_autoReminders ? QStringLiteral("1") : QStringLiteral("0"))
+             && setMeta(QStringLiteral("pause_until_ms"), QString::number(m_pauseUntilMs))
+             && setMeta(QStringLiteral("pause_start_ms"), QString::number(m_pauseStartMs))
              && setMeta(QStringLiteral("history"),
                         QString::fromUtf8(variantMapToJson(data.history)))
              && setMeta(QStringLiteral("deleted_occurrences"),
@@ -2490,6 +2783,13 @@ bool AppCore::loadRealData(DataSnapshot *data)
         jsonToVariantListHash(meta.value(QStringLiteral("skipped_occurrences")).toUtf8());
     m_autoReminders = meta.value(QStringLiteral("auto_reminders"), QStringLiteral("1"))
                       != QStringLiteral("0");
+    m_pauseUntilMs = meta.value(QStringLiteral("pause_until_ms"), QStringLiteral("0")).toLongLong();
+    m_pauseStartMs = meta.value(QStringLiteral("pause_start_ms"), QStringLiteral("0")).toLongLong();
+    // 已经到期的暂停视为自动恢复：不留下"暂停中"的假状态。
+    if (m_pauseUntilMs > 0 && m_pauseUntilMs <= clockNowMs()) {
+        m_pauseUntilMs = 0;
+        m_pauseStartMs = 0;
+    }
 
     if (!query.exec(QStringLiteral("SELECT json FROM plans ORDER BY id")))
         return false;
@@ -2520,6 +2820,8 @@ void AppCore::resetStorage()
 {
     clearDatabase();
     m_demoMode = false;
+    m_pauseUntilMs = 0;
+    m_pauseStartMs = 0;
     clearActive();                 // 真实域清空
     m_realData = snapshot();
     seedDemo();                    // 演示域重建
@@ -2529,5 +2831,6 @@ void AppCore::resetStorage()
     emit plansChanged();
     emit recordsChanged();
     emit profileChanged();
+    emit pausedChanged();
     emit occurrencesChanged();
 }
