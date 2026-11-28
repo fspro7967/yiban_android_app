@@ -16,10 +16,14 @@ import android.os.Build;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.telephony.SmsManager;
 import android.util.Log;
 
+import java.util.ArrayList;
 import java.util.Locale;
 
 /**
@@ -53,6 +57,20 @@ public final class YibanPlatform {
     private static Runnable sTtsPendingDone;
     /** 最近一次开口的时刻（elapsedRealtime），用于去重：服务念过界面就不再念一遍。 */
     private static volatile long sSpokenAt = 0L;
+    // B2-7：语速/音调由设置页持久化后下发；TTS 初始化晚于设置下发，所以存成静态字段。
+    private static volatile float sSpeechRate = 0.9f;
+    private static volatile float sSpeechPitch = 1.0f;
+    private static volatile boolean sChineseVoiceMissing = false;
+
+    // B2-9：语音确认（ASR）。只用系统 SpeechRecognizer，不编译 Whisper。
+    // 无中文识别服务 / 无麦克风权限时 canListen() 返回 false，界面降级为按钮，不崩。
+    private static SpeechRecognizer sRecognizer;
+    private static volatile boolean sListening = false;
+    /** 一次识别只回传一次结果（onResults / onError / 超时 只认第一个）。 */
+    private static volatile boolean sVoiceResultSent = false;
+
+    /** C++ 侧 platform.cpp 注册的 native 回调：把识别到的原始文本送回主线程处理。 */
+    public static native void onVoiceResult(String text);
 
     private YibanPlatform() {
     }
@@ -246,7 +264,7 @@ public final class YibanPlatform {
         }
     }
 
-    // ---------------------------------------------------------------- 语音
+    // ---------------------------------------------------------------- 语音播报（TTS）
 
     /**
      * 到点播报走系统 TTS，不走 Qt 的 QTextToSpeech。
@@ -351,6 +369,52 @@ public final class YibanPlatform {
         sTtsPending = null;
     }
 
+    // ---- B2-7：语速 / 音调 / 中文发音人 ----
+
+    /** 设置语速。TTS 还没初始化时先记下来，ensureTts 回调里会应用。 */
+    public static void setSpeechRate(float rate) {
+        if (rate < 0.5f || rate > 2.0f) return;
+        sSpeechRate = rate;
+        if (sTts != null && sTtsReady) {
+            try { sTts.setSpeechRate(rate); } catch (Exception ignored) {}
+        }
+    }
+
+    /** 设置音调。 */
+    public static void setSpeechPitch(float pitch) {
+        if (pitch < 0.5f || pitch > 2.0f) return;
+        sSpeechPitch = pitch;
+        if (sTts != null && sTtsReady) {
+            try { sTts.setPitch(pitch); } catch (Exception ignored) {}
+        }
+    }
+
+    /** 已安装的离线中文发音人，逗号分隔（C++ 侧 split(',')）。 */
+    public static String chineseVoices(Context ctx) {
+        ensureTts(ctx);
+        if (sTts == null || !sTtsReady) return "";
+        StringBuilder out = new StringBuilder();
+        try {
+            for (android.speech.tts.Voice v : sTts.getVoices()) {
+                if (v == null || v.getLocale() == null) continue;
+                String lang = v.getLocale().getLanguage();
+                if (!"zh".equalsIgnoreCase(lang)) continue;
+                if (!v.isNetworkConnectionRequired()) { // 只要离线可用的
+                    if (out.length() > 0) out.append(',');
+                    out.append(v.getName());
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return out.toString();
+    }
+
+    /** setLanguage(Locale.CHINA) 是否失败过（没有中文离线引擎时提示用户）。 */
+    public static boolean chineseVoiceMissing(Context ctx) {
+        ensureTts(ctx);
+        return sChineseVoiceMissing;
+    }
+
     private static synchronized void ensureTts(Context ctx) {
         if (sTts != null) {
             return;
@@ -366,10 +430,13 @@ public final class YibanPlatform {
                     int result = sTts.setLanguage(Locale.CHINA);
                     if (result == TextToSpeech.LANG_MISSING_DATA
                             || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        sChineseVoiceMissing = true;
                         sTts.setLanguage(Locale.getDefault());
+                    } else {
+                        sChineseVoiceMissing = false;
                     }
-                    sTts.setSpeechRate(0.9f);
-                    sTts.setPitch(1.0f);
+                    sTts.setSpeechRate(sSpeechRate);
+                    sTts.setPitch(sSpeechPitch);
                 } catch (Exception ignored) {
                 }
                 sTtsReady = true;
@@ -384,6 +451,111 @@ public final class YibanPlatform {
         } catch (Throwable t) {
             sTts = null;
             sTtsReady = false;
+        }
+    }
+
+    // ---------------------------------------------------------------- 语音确认（B2-9，ASR）
+
+    /**
+     * 有没有可用的中文语音识别。没麦克风权限、设备没有识别服务都返回 false，
+     * 界面据此把"按住说话"降级为普通按钮（提醒页照常可点）。
+     */
+    public static boolean canListen(Context ctx) {
+        if (ctx == null) return false;
+        try {
+            if (android.content.pm.PackageManager.PERMISSION_GRANTED
+                    != ctx.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)) {
+                return false;
+            }
+            return SpeechRecognizer.isRecognitionAvailable(ctx);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 启动一次"按住说话"识别。结果（或超时空串）只通过 onVoiceResult 回传一次，
+     * 意图判定交给 C++ 的 VoiceIntent，这里不碰业务。
+     */
+    public static synchronized void startListening(Context ctx) {
+        if (ctx == null || !canListen(ctx)) {
+            // 静默回传空串：C++ 侧判定为 Unknown，只提示"没听清"，不动作。
+            fireVoiceResult("");
+            return;
+        }
+        stopListeningLocked();
+        sVoiceResultSent = false;
+        try {
+            final Context app = ctx.getApplicationContext();
+            sRecognizer = SpeechRecognizer.createSpeechRecognizer(app);
+            sRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(android.os.Bundle params) { sListening = true; }
+                @Override public void onBeginningOfSpeech() { }
+                @Override public void onRmsChanged(float rmsdB) { }
+                @Override public void onBufferReceived(byte[] buffer) { }
+                @Override public void onEndOfSpeech() { sListening = false; }
+                @Override public void onError(int error) {
+                    Log.w("YibanPlatform", "ASR error=" + error);
+                    fireVoiceResult("");   // 认不出是常态，降级为按钮
+                }
+                @Override public void onResults(android.os.Bundle results) {
+                    ArrayList<String> matches = results.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION);
+                    fireVoiceResult(matches == null || matches.isEmpty()
+                            ? "" : matches.get(0));
+                }
+                @Override public void onPartialResults(android.os.Bundle partial) { }
+                @Override public void onEvent(int eventType, android.os.Bundle params) { }
+            });
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN");
+            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
+            sRecognizer.startListening(intent);
+            // 3 秒没出结果就放弃，绝不把提醒流程卡住（接口冻结清单规则 2）。
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (!sVoiceResultSent) {
+                    Log.w("YibanPlatform", "ASR timeout 3s -> fallback to buttons");
+                    fireVoiceResult("");
+                }
+            }, 3000);
+        } catch (Throwable t) {
+            Log.w("YibanPlatform", "startListening failed: " + t);
+            fireVoiceResult("");
+        }
+    }
+
+    /** 只回传一次结果，随后释放识别器，避免连点产生多次确认。 */
+    private static void fireVoiceResult(String text) {
+        if (sVoiceResultSent) return;
+        sVoiceResultSent = true;
+        sListening = false;
+        try {
+            onVoiceResult(text == null ? "" : text);
+        } catch (Throwable ignored) {
+            // native 回调还没注册（如桌面/dex 未加载）时静默，不影响按钮确认。
+        }
+        stopListeningLocked();
+    }
+
+    public static synchronized void stopListening() {
+        stopListeningLocked();
+    }
+
+    private static void stopListeningLocked() {
+        sListening = false;
+        if (sRecognizer != null) {
+            try {
+                sRecognizer.stopListening();
+            } catch (Throwable ignored) {
+            }
+            try {
+                sRecognizer.destroy();
+            } catch (Throwable ignored) {
+            }
+            sRecognizer = null;
         }
     }
 
@@ -768,7 +940,40 @@ public final class YibanPlatform {
         return sb.toString();
     }
 
+    // ---------------------------------------------------------------- 灯板连接前台服务（B2-2）
+
+    /** 连上灯板时保活：起一个 connectedDevice 前台服务，灭屏也不断 5 秒心跳。 */
+    public static void startConnectionService(Context ctx) {
+        try {
+            Intent service = new Intent(ctx, ConnectionService.class);
+            service.setAction(ConnectionService.ACTION_START);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(service);
+            } else {
+                ctx.startService(service);
+            }
+        } catch (Throwable t) {
+            Log.w("YibanPlatform", "启动灯板连接服务失败", t);
+        }
+    }
+
+    /** 断开灯板时停服务，通知随之消失。 */
+    public static void stopConnectionService(Context ctx) {
+        try {
+            Intent service = new Intent(ctx, ConnectionService.class);
+            service.setAction(ConnectionService.ACTION_STOP);
+            ctx.startService(service);
+        } catch (Throwable t) {
+            Log.w("YibanPlatform", "停止灯板连接服务失败", t);
+        }
+    }
+
     // ---------------------------------------------------------------- 老人机模式
+
+    /** device owner 判定：不是 owner 时 startLockTask 会弹"屏幕固定"确认（安全降级）。 */
+    public static boolean isDeviceOwner(Context ctx) {
+        return AdminReceiver.isDeviceOwner(ctx);
+    }
 
     public static void startLockTask(Context ctx) {
         Activity activity = activity(ctx);
@@ -776,6 +981,8 @@ public final class YibanPlatform {
             return;
         }
         try {
+            // device owner：先把本应用加进 lock-task 白名单，再锁定就不弹确认。
+            AdminReceiver.allowLockTask(activity);
             activity.startLockTask();
         } catch (Exception ignored) {
             // 没有设备管理员时系统会先弹"屏幕固定"确认，用户取消即失败；

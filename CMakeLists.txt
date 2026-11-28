@@ -86,7 +86,15 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Quick Qml)
 
 # TextToSpeech 用于提醒/统计的语音播报；Bluetooth 用于 BLE 连接外设板（BleLink / DeviceHandler）；
 # Concurrent 给离线 TTS 的后台加载。
-find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql Bluetooth Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Quick Qml QuickControls2 TextToSpeech Network Sql Concurrent)
+# 外设板 BLE 是可选能力：部分桌面 SDK 没带 QtBluetooth（CI/本机单测环境）。
+# 缺模块时编译 BLE 空实现，同步/数据/权限这些单测照常跑；Android 完整 SDK 不受影响。
+find_package(Qt6Bluetooth QUIET)
+option(YIBAN_SKIP_BLE "Build without QtBluetooth (stub BleLink)" OFF)
+if(NOT Qt6Bluetooth_FOUND)
+    set(YIBAN_SKIP_BLE ON)
+    message(STATUS "Qt6Bluetooth 未安装：使用 BLE 空实现（仅影响桌面外设板功能）")
+endif()
 
 # sherpa-onnx（离线中文语音合成）——只编 Android；桌面构建连它的源也不编。
 # 到点播报走仓库自带模型预渲染的 WAV，见 src/alarm_tts.{h,cpp} 与组里 review 反馈。
@@ -137,6 +145,8 @@ set(VM_SOURCES
         src/comm/connection_probe.cpp
         src/comm/device_link.h
         src/comm/device_link.cpp
+        src/comm/voice_intent.h
+        src/comm/voice_intent.cpp
         src/comm/ble_link.h
         src/comm/ble_link.cpp
 )
@@ -150,6 +160,13 @@ set(BOARD_SOURCES
         include/msgsender.h
         src/msgsender.cpp
 )
+
+if(YIBAN_SKIP_BLE)
+    list(REMOVE_ITEM VM_SOURCES src/comm/ble_link.cpp)
+    list(REMOVE_ITEM BOARD_SOURCES include/devicehandler.h src/devicehandler.cpp)
+    list(APPEND VM_SOURCES src/comm/ble_link_stub.cpp)
+    add_compile_definitions(YIBAN_NO_BLUETOOTH)
+endif()
 
 # 离线语音链路（模型提取 → sherpa-onnx 合成 → 到点播报 WAV）只在 Android 编译：
 # speechsynthesizer.cpp 直接调 sherpa 的 C API，桌面构建没有这个库。
@@ -252,6 +269,10 @@ target_include_directories(yiban_android_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+if(NOT YIBAN_SKIP_BLE)
+    set(YIBAN_BLUETOOTH_LIB Qt${QT_VERSION_MAJOR}::Bluetooth)
+endif()
+
 target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::Quick
     Qt${QT_VERSION_MAJOR}::Qml
@@ -259,7 +280,7 @@ target_link_libraries(yiban_android_app PRIVATE
     Qt${QT_VERSION_MAJOR}::TextToSpeech
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::Sql
-    Qt${QT_VERSION_MAJOR}::Bluetooth
+    ${YIBAN_BLUETOOTH_LIB}
     Qt${QT_VERSION_MAJOR}::Concurrent
 )
 

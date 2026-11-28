@@ -4,6 +4,8 @@
 #include <QStringList>
 #include <QVariantList>
 
+#include <functional>
+
 // 平台层（B2）：全仓库唯一允许碰 Android 系统服务的地方。
 //
 // 约定：
@@ -64,6 +66,32 @@ void stopSpeaking();
 bool canSpeak();
 // 最近 withinMs 毫秒内是否刚播报过：闹钟服务念过之后界面不再重复念同一句。
 bool wasSpokenRecently(int withinMs);
+// 播报语速（B2-7）：Android 立即更新已初始化的 TextToSpeech；桌面更新 QTextToSpeech。
+void setSpeechRate(double rate);
+// 播报音调（B2-7）：默认 1.0。
+void setSpeechPitch(double pitch);
+// 已安装的离线中文发音人名字（可能为空：系统只有英文引擎）。
+QStringList chineseVoices();
+// setLanguage(Locale.CHINA) 失败过：没有中文离线引擎，界面应提示。
+bool chineseVoiceMissing();
+
+// B2-9：语音确认（ASR）。平台层只负责"能不能听 + 开始/停止听 + 结果回传"，
+// 意图判定在 VoiceIntent（纯逻辑），业务动作在 DeviceVM。这样 Java→C++ 的
+// 回调只传原始识别文本，平台层不碰业务状态。
+// 结果由 setVoiceResultListener 注册的回调送回，回调已经在主线程执行。
+using VoiceResultListener = std::function<void(const QString &text)>;
+void setVoiceResultListener(VoiceResultListener listener);
+// 麦克风权限 + 系统有可用的中文识别服务。
+bool canListen();
+// 启动/停止一次"按住说话"识别。3 秒无结果会由 Java 侧回调空串（降级为按钮）。
+void startVoiceListening();
+void stopVoiceListening();
+
+// B2-2：连着灯板时起前台服务保活（connectedDevice 类型，常驻通知），断开时停掉。
+void startConnectionService();
+void stopConnectionService();
+// B2-4：是不是 device owner（不是时 startLockTask 会弹"屏幕固定"确认）。
+bool isDeviceOwner();
 
 // 一行诊断串（通知/精确闹钟/全屏提醒/电池白名单/通道状态/已登记闹钟数）。
 // 启动时打一条日志，真机排查"闹钟不响"直接看这一行。

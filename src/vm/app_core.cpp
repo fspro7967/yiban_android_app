@@ -69,6 +69,16 @@ QHash<qint64, QVariantList> jsonToVariantListHash(const QByteArray &blob)
     return hash;
 }
 
+QByteArray variantListToJson(const QVariantList &list)
+{
+    return QJsonDocument(QJsonArray::fromVariantList(list)).toJson(QJsonDocument::Compact);
+}
+
+QVariantList jsonToVariantList(const QByteArray &blob)
+{
+    return QJsonDocument::fromJson(blob).array().toVariantList();
+}
+
 // event_id 的命名空间固定，保证同样的 (occurrence, action, ts) 只会产生一个 id。
 const QUuid kEventNamespace(QStringLiteral("{7b0f7d3e-3c2a-4a55-9f0e-6b1a2c8d4e11}"));
 
@@ -218,6 +228,7 @@ void AppCore::seedDemo()
     m_occurrences.clear();
     m_records.clear();
     m_events.clear();
+    m_deletedRecords.clear();
     m_nextPlanId = 1;
     m_nextRecordId = 1;
     m_nextEventSeq = 1;
@@ -332,6 +343,7 @@ AppCore::DataSnapshot AppCore::snapshot() const
     data.occurrences = m_occurrences;
     data.records = m_records;
     data.events = m_events;
+    data.deletedRecords = m_deletedRecords;
     data.nextPlanId = m_nextPlanId;
     data.nextRecordId = m_nextRecordId;
     data.nextEventSeq = m_nextEventSeq;
@@ -352,6 +364,7 @@ void AppCore::clearActive()
     m_occurrences.clear();
     m_records.clear();
     m_events.clear();
+    m_deletedRecords.clear();
     m_nextPlanId = 1;
     m_nextRecordId = 1;
     m_nextEventSeq = 1;
@@ -370,6 +383,7 @@ void AppCore::applySnapshot(const DataSnapshot &data)
     m_plans = data.plans;
     m_records = data.records;
     m_events = data.events;
+    m_deletedRecords = data.deletedRecords;
     m_nextPlanId = data.nextPlanId;
     m_nextRecordId = data.nextRecordId;
     m_nextEventSeq = data.nextEventSeq;
@@ -1580,7 +1594,16 @@ bool AppCore::removeRecord(qint64 recordId)
         if (m_records.at(i).toMap().value(QStringLiteral("recordId")).toLongLong() != recordId)
             continue;
         const QVariantMap rec = m_records.at(i).toMap();
+        const qint64 serverId = rec.value(QStringLiteral("serverRecordId")).toLongLong();
         m_records.removeAt(i);
+        // 已上传到云端的记录要发 DELETE（C-4）：留墓碑，由 SyncVM 补发；
+        // 未上传（0）或已被服务端拒收（-1）的记录服务端没有，只删本地。
+        if (serverId > 0 && !m_demoMode) {
+            m_deletedRecords.append(QVariantMap {
+                { QStringLiteral("recordId"), rec.value(QStringLiteral("recordId")).toLongLong() },
+                { QStringLiteral("serverRecordId"), serverId },
+            });
+        }
         logOperation(QStringLiteral("记录"),
                      QStringLiteral("撤销记录：%1")
                          .arg(recordLabel(rec.value(QStringLiteral("type")).toString(),
@@ -1862,7 +1885,15 @@ void AppCore::markRecordSynced(qint64 recordId, qint64 serverRecordId, qint64 re
         emit recordsChanged();
         return;
     }
-    // 找不到：上传途中被撤销了（服务端暂无删除接口，那条会留在服务端）
+    // 找不到：上传途中被撤销了。POST 回执已经告诉服务端 record_id，
+    // 这里补一个墓碑让 SyncVM 发 DELETE，否则那条会永久留在服务端。
+    if (serverRecordId > 0 && !m_demoMode) {
+        m_deletedRecords.append(QVariantMap {
+            { QStringLiteral("recordId"), recordId },
+            { QStringLiteral("serverRecordId"), serverRecordId },
+        });
+        emit recordsChanged();
+    }
 }
 
 void AppCore::rejectRecord(qint64 recordId)
@@ -1887,6 +1918,29 @@ void AppCore::forgetServerRecord(qint64 recordId)
         rec[QStringLiteral("serverRecordId")] = 0;
         rec[QStringLiteral("syncedRev")] = 0;
         m_records[i] = rec;
+        emit recordsChanged();
+        return;
+    }
+}
+
+QVariantList AppCore::pendingRecordDeletes() const
+{
+    return m_demoMode ? QVariantList {} : m_deletedRecords;
+}
+
+int AppCore::pendingDeleteRecordCount() const
+{
+    return m_demoMode ? 0 : m_deletedRecords.size();
+}
+
+void AppCore::markRecordDeleted(qint64 recordId)
+{
+    for (int i = 0; i < m_deletedRecords.size(); ++i) {
+        if (m_deletedRecords.at(i).toMap().value(QStringLiteral("recordId")).toLongLong()
+            != recordId)
+            continue;
+        m_deletedRecords.removeAt(i);
+        logOperation(QStringLiteral("记录"), QStringLiteral("已同步撤销到云端"));
         emit recordsChanged();
         return;
     }
@@ -2431,6 +2485,8 @@ void AppCore::persistNow()
                         QString::fromUtf8(variantListHashToJson(data.deletedOccurrences)))
              && setMeta(QStringLiteral("skipped_occurrences"),
                         QString::fromUtf8(variantListHashToJson(data.skippedOccurrences)))
+             && setMeta(QStringLiteral("deleted_records"),
+                        QString::fromUtf8(variantListToJson(data.deletedRecords)))
              && setMeta(QStringLiteral("saved_at_ms"),
                         QString::number(QDateTime::currentMSecsSinceEpoch()));
     }
@@ -2488,6 +2544,8 @@ bool AppCore::loadRealData(DataSnapshot *data)
         jsonToVariantListHash(meta.value(QStringLiteral("deleted_occurrences")).toUtf8());
     loaded.skippedOccurrences =
         jsonToVariantListHash(meta.value(QStringLiteral("skipped_occurrences")).toUtf8());
+    loaded.deletedRecords =
+        jsonToVariantList(meta.value(QStringLiteral("deleted_records")).toUtf8());
     m_autoReminders = meta.value(QStringLiteral("auto_reminders"), QStringLiteral("1"))
                       != QStringLiteral("0");
 

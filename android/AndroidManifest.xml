@@ -24,6 +24,8 @@
     <!-- 响铃前台服务：Android 14 起前台服务必须声明类型并配对应权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- B2-2：连着灯板时的连接前台服务，Android 14 起要单独声明类型权限 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- 把闹铃音量拉到最大，静音模式下也能听见 -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
@@ -37,10 +39,13 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Android 11+ 需要声明 TTS 服务的可见性，否则 TextToSpeech 找不到引擎 -->
+    <!-- Android 11+ 需要声明服务可见性：TTS 引擎 + 语音识别服务（B2-9） -->
     <queries>
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
     </queries>
 
@@ -82,6 +87,11 @@
           <meta-data
                 android:name="android.app.arguments"
                 android:value="-- %%INSERT_APP_ARGUMENTS%% --" />
+
+          <!-- B2-2：灭屏/切后台不让 Qt 暂停事件循环，5 秒心跳不断 -->
+          <meta-data
+                android:name="android.app.background_running"
+                android:value="true" />
         </activity>
 
         <provider
@@ -107,6 +117,29 @@
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- B2-2：连着床头灯板期间的前台服务，常驻通知+connectedDevice 类型，
+             让系统在灭屏/切后台时别把 5 秒心跳的 Qt 主循环冻住。断开时端上停掉。 -->
+        <service
+            android:name="com.yiban.elder.ConnectionService"
+            android:enabled="true"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- B2-4：device owner 的 device admin。设成 owner 后 startLockTask 不弹
+             "屏幕固定"确认；退出仍走 DeviceVM.exitKiosk() 的看护人通道。 -->
+        <receiver
+            android:name="com.yiban.elder.AdminReceiver"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
         <!-- 短信确认弹窗的自动确认（见 SmsConfirmService.java）。
              平时完全不活动：只在呼救发出后的 15 秒内、且只对 HyperOS 权限

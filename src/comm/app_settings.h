@@ -39,6 +39,13 @@ public:
     bool nightQuiet() const;
     void setNightQuiet(bool on);
 
+    // 播报语速（B2-7）：0.75 / 0.9 / 1.1 三档，重启保留。
+    double speechRate() const;
+    void setSpeechRate(double rate);
+    // 播报音调（B2-7）：默认 1.0，>1 更尖、<1 更低沉。
+    double speechPitch() const;
+    void setSpeechPitch(double pitch);
+
     qint64 lastSyncTs() const;
     void setLastSyncTs(qint64 ts);
 
@@ -57,5 +64,6 @@ private:
 
     QString readString(const QString &key, const QString &fallback = QString()) const;
     bool readBool(const QString &key, bool fallback) const;
+    double readDouble(const QString &key, double fallback) const;
     void write(const QString &key, const QVariant &value) const;
 };

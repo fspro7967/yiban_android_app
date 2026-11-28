@@ -35,8 +35,19 @@ class DeviceVM : public QObject
     // I3：逐项权限诊断 {key,label,granted,canOpenSettings}，F1 权限页直接当 model。
     Q_PROPERTY(QVariantList permissionDiagnostics READ permissionDiagnostics NOTIFY permissionChanged)
     Q_PROPERTY(bool kioskActive READ kioskActive NOTIFY kioskChanged)
+    // B2-4：是不是 device owner（false 时 kiosk 退化为系统"屏幕固定"）。
+    Q_PROPERTY(bool deviceOwner READ deviceOwner NOTIFY kioskChanged)
     Q_PROPERTY(bool voiceEnabled READ voiceEnabled WRITE setVoiceEnabled NOTIFY voiceChanged)
     Q_PROPERTY(bool nightQuiet READ nightQuiet WRITE setNightQuiet NOTIFY voiceChanged)
+    // B2-7：播报语速/音调，改后下一条提醒立即生效且重启保留。
+    Q_PROPERTY(double speechRate READ speechRate WRITE setSpeechRate NOTIFY voiceChanged)
+    Q_PROPERTY(double speechPitch READ speechPitch WRITE setSpeechPitch NOTIFY voiceChanged)
+    // 离线中文发音人；空列表 + chineseVoiceMissing=true 时提示用户装中文 TTS 引擎。
+    Q_PROPERTY(QStringList chineseVoices READ chineseVoices NOTIFY voiceChanged)
+    Q_PROPERTY(bool chineseVoiceMissing READ chineseVoiceMissing NOTIFY voiceChanged)
+    // B2-9：是否正在听用户说话，以及设备能不能做语音确认（无麦克风/无识别服务时为 false）。
+    Q_PROPERTY(bool voiceListening READ voiceListening NOTIFY voiceListeningChanged)
+    Q_PROPERTY(bool voiceAvailable READ voiceAvailable NOTIFY voiceChanged)
     // 夜间安静此刻是否生效（开关打开且处于 22:00–07:00），设置页和提醒页据此提示。
     Q_PROPERTY(bool nightQuietActive READ nightQuietNow NOTIFY voiceChanged)
     Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY networkChanged)
@@ -65,11 +76,21 @@ public:
     QStringList permissions() const;
     QVariantList permissionDiagnostics() const { return m_permissionDiagnostics; }
     bool kioskActive() const { return m_kioskActive; }
+    bool deviceOwner() const;
     bool voiceEnabled() const { return m_voiceEnabled; }
     void setVoiceEnabled(bool on);
     bool nightQuiet() const { return m_nightQuiet; }
     void setNightQuiet(bool on);
     bool nightQuietNow() const;
+    double speechRate() const { return m_speechRate; }
+    void setSpeechRate(double rate);
+    double speechPitch() const { return m_speechPitch; }
+    void setSpeechPitch(double pitch);
+    QStringList chineseVoices() const;
+    bool chineseVoiceMissing() const;
+    // B2-9：语音确认状态。voiceAvailable 每次读都现查权限/识别服务，桌面恒 false。
+    bool voiceListening() const { return m_voiceListening; }
+    bool voiceAvailable() const;
 
     QString serverUrl() const { return m_serverUrl; }
     QString networkStatus() const;
@@ -99,6 +120,10 @@ public:
     // "sos" 是呼救播报，任何时段都必须出声；其余（到点播报）在安静时段一律不出声。
     Q_INVOKABLE void speak(const QString &text, const QString &tag);
     Q_INVOKABLE void stopSpeaking();
+    // B2-9：提醒页"按住说话"。occurrenceId 是这次语音要确认/推迟的提醒；
+    // 无麦克风权限时先申请权限并发 toast，不启动识别、绝不崩。
+    Q_INVOKABLE void startVoiceConfirm(qint64 occurrenceId);
+    Q_INVOKABLE void stopVoiceConfirm();
     Q_INVOKABLE void sos(int level);
     Q_INVOKABLE void enterKiosk();
     Q_INVOKABLE void exitKiosk();
@@ -118,6 +143,7 @@ signals:
     void permissionChanged();
     void kioskChanged();
     void voiceChanged();
+    void voiceListeningChanged();
     void networkChanged();
     void networkLogChanged();
     void tokenChanged();
@@ -141,6 +167,7 @@ private:
     void handleTestReply(quint64 requestId, int status, const QJsonObject &body);
     void handleTestFailed(quint64 requestId, const QString &code);
     void finishPair(bool ok, const QString &role, const QString &reason);
+    void onVoiceResult(const QString &text); // B2-9：识别结果 → VoiceIntent → confirm/snooze
 
     QTextToSpeech *m_tts = nullptr;   // 仅桌面用：Android 上走系统 TTS（Platform::speak）
     QTimer *m_tickTimer = nullptr;
@@ -163,9 +190,13 @@ private:
     bool m_kioskActive = false;
     bool m_voiceEnabled = true;
     bool m_nightQuiet = true;
+    double m_speechRate = 0.9;
+    double m_speechPitch = 1.0;
     bool m_warnedExactAlarm = false;
     bool m_warnedFullScreen = false;
     bool m_speaking = false;
+    qint64 m_voiceOccurrenceId = 0;  // B2-9：这次语音确认针对的提醒
+    bool m_voiceListening = false;
     QString m_role = QStringLiteral("elder");
     QString m_serverUrl = QStringLiteral("http://101.245.109.50:8000/v1");
     bool m_networkInfoReady = false; // 系统联网状态后端是否加载成功

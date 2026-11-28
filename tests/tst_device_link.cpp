@@ -39,6 +39,8 @@ private slots:
     void overlongLineIsDropped();
     void resetDropsHalfLine();
     void roundTripKeepsBigIds();
+    void reminderFrameSurvivesChunking();
+    void ackAndAlarmPayloadFields();
 };
 
 void TestDeviceLink::encodeIsOneLine()
@@ -165,6 +167,56 @@ void TestDeviceLink::roundTripKeepsBigIds()
     const QJsonObject payload = spy.at(0).at(1).toJsonObject();
     QCOMPARE(payload.value(QStringLiteral("occurrence_id")).toInteger(), occurrenceId);
     QCOMPARE(payload.value(QStringLiteral("due_ts")).toInteger(), ts);
+}
+
+void TestDeviceLink::reminderFrameSurvivesChunking()
+{
+    // B2-5：home/reminder/<device> 的完整 payload，按 BLE 20 字节分包后能逐字还原。
+    LoopbackLink link;
+    QSignalSpy spy(&link, &DeviceLink::received);
+    const QJsonObject payload{
+        {QStringLiteral("occurrence_id"), 12000000881LL},
+        {QStringLiteral("title"), QStringLiteral("吃降压药，一次一片")},
+        {QStringLiteral("state"), QStringLiteral("notified")},
+        {QStringLiteral("light_color"), QStringLiteral("yellow")},
+        {QStringLiteral("due_ts"), 1794800000000LL},
+    };
+    link.send(QStringLiteral("home/reminder/board1"), payload);
+    const QByteArray frame = link.sent.first();
+    for (int i = 0; i < frame.size(); i += 20)
+        link.feed(frame.mid(i, 20));   // 一包 20 字节，模拟 Nordic UART 的 MTU
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.at(0).at(0).toString(), QStringLiteral("home/reminder/board1"));
+    const QJsonObject got = spy.at(0).at(1).toJsonObject();
+    QCOMPARE(got.value(QStringLiteral("occurrence_id")).toInteger(), 12000000881LL);
+    QCOMPARE(got.value(QStringLiteral("title")).toString(), QStringLiteral("吃降压药，一次一片"));
+    QCOMPARE(got.value(QStringLiteral("light_color")).toString(), QStringLiteral("yellow"));
+    QCOMPARE(got.value(QStringLiteral("due_ts")).toInteger(), 1794800000000LL);
+}
+
+void TestDeviceLink::ackAndAlarmPayloadFields()
+{
+    // B2-6：板子按键上报的两种帧，字段不能丢（大 id 用 toInteger 拿）。
+    LoopbackLink link;
+    QSignalSpy spy(&link, &DeviceLink::received);
+    link.send(QStringLiteral("home/ack/board1"),
+              QJsonObject{{QStringLiteral("occurrence_id"), 12000000881LL},
+                          {QStringLiteral("action"), QStringLiteral("confirm")},
+                          {QStringLiteral("ts"), 1794800000000LL}});
+    link.send(QStringLiteral("home/alarm"),
+              QJsonObject{{QStringLiteral("level"), 3},
+                          {QStringLiteral("occurrence_id"), 0},
+                          {QStringLiteral("ts"), 1794800000000LL}});
+    QCOMPARE(link.sent.size(), 2);
+    link.feed(link.sent.at(0));
+    link.feed(link.sent.at(1));
+    QCOMPARE(spy.count(), 2);
+    QCOMPARE(spy.at(0).at(0).toString(), QStringLiteral("home/ack/board1"));
+    const QJsonObject ack = spy.at(0).at(1).toJsonObject();
+    QCOMPARE(ack.value(QStringLiteral("occurrence_id")).toInteger(), 12000000881LL);
+    QCOMPARE(ack.value(QStringLiteral("action")).toString(), QStringLiteral("confirm"));
+    QCOMPARE(spy.at(1).at(0).toString(), QStringLiteral("home/alarm"));
+    QCOMPARE(spy.at(1).at(1).toJsonObject().value(QStringLiteral("level")).toInt(), 3);
 }
 
 QTEST_GUILESS_MAIN(TestDeviceLink)

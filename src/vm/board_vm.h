@@ -83,6 +83,14 @@ public:
     // 断开并解除绑定，不再自动重连。
     Q_INVOKABLE void forget();
 
+    // ---- 灯板提醒下发 / 上报（B2-5 / B2-6）----
+    // 提醒状态变化时推一条 home/reminder/<device>：occurrence id、标题、灯色、due_ts。
+    // 板子不在线时丢弃（不排队），重连后由 pushCurrentReminders() 只发当前状态。
+    Q_INVOKABLE void sendReminder(qint64 occurrenceId, const QString &title,
+                                  const QString &state, qint64 dueTs);
+    // 把今天所有还没完成的提醒当前状态推一遍（重连时调用，不补发历史）。
+    void pushCurrentReminders();
+
 signals:
     void scanningChanged();
     void devicesChanged();
@@ -93,6 +101,9 @@ signals:
     void presenceChanged();
     void commandRejected(const QString &code, const QString &message);
     void toast(const QString &text);
+    // 板子呼救键：B2 不直接持有 DeviceVM，QML/C++ 订阅后调 sos()，
+    // 走和手动 SOS 完全一样的拨号/短信/云端 escalate 路径。
+    void boardSosRequested();
 
 private:
     explicit BoardVM(QObject *parent = nullptr);

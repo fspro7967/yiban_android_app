@@ -4,11 +4,23 @@
 
 #ifdef Q_OS_ANDROID
 #include <QCoreApplication>
+#include <QJniEnvironment>
 #include <QJniObject>
+#include <QMetaObject>
 #endif
 
 namespace Platform {
 namespace {
+
+// B2-9：Java→C++ 的语音识别结果回调。只保存监听器并负责切回主线程，
+// 不判业务——意图判定在 VoiceIntent，动作在 DeviceVM。
+VoiceResultListener s_voiceListener;
+
+void deliverVoiceResult(const QString &text)
+{
+    if (s_voiceListener)
+        s_voiceListener(text);
+}
 
 #ifdef Q_OS_ANDROID
 constexpr auto kBridge = "com/yiban/elder/YibanPlatform";
@@ -40,6 +52,21 @@ const char *permissionName(Permission p)
 #endif
 
 } // namespace
+
+#ifdef Q_OS_ANDROID
+// Java 侧 YibanPlatform.onVoiceResult(String) 的 native 实现。
+// JNI 线程不能碰 QML / 业务状态，统一用 QueuedConnection 切回主线程（接口冻结清单规则 4）。
+extern "C" JNIEXPORT void JNICALL
+Java_com_yiban_elder_YibanPlatform_onVoiceResult(JNIEnv *env, jclass, jstring text)
+{
+    QString result;
+    if (text)
+        result = QJniObject::fromLocalRef(text).toString();
+    QMetaObject::invokeMethod(QCoreApplication::instance(), [result]() {
+        deliverVoiceResult(result);
+    }, Qt::QueuedConnection);
+}
+#endif
 
 bool isAndroid()
 {
@@ -318,6 +345,131 @@ bool wasSpokenRecently(int withinMs)
                                                   jlong(withinMs));
 #else
     Q_UNUSED(withinMs)
+    return false;
+#endif
+}
+
+void setSpeechRate(double rate)
+{
+#ifdef Q_OS_ANDROID
+    QJniObject::callStaticMethod<void>(kBridge, "setSpeechRate", "(F)V", jfloat(rate));
+#else
+    Q_UNUSED(rate)
+#endif
+}
+
+void setSpeechPitch(double pitch)
+{
+#ifdef Q_OS_ANDROID
+    QJniObject::callStaticMethod<void>(kBridge, "setSpeechPitch", "(F)V", jfloat(pitch));
+#else
+    Q_UNUSED(pitch)
+#endif
+}
+
+QStringList chineseVoices()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return {};
+    const QJniObject names = QJniObject::callStaticObjectMethod(
+        kBridge, "chineseVoices", "(Landroid/content/Context;)Ljava/lang/String;",
+        context.object());
+    if (!names.isValid())
+        return {};
+    return names.toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
+#else
+    return {};
+#endif
+}
+
+bool chineseVoiceMissing()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(
+        kBridge, "chineseVoiceMissing", "(Landroid/content/Context;)Z", context.object());
+#else
+    return false;
+#endif
+}
+
+void setVoiceResultListener(VoiceResultListener listener)
+{
+    s_voiceListener = std::move(listener);
+}
+
+bool canListen()
+{
+#ifdef Q_OS_ANDROID
+    if (!hasPermission(Permission::Microphone))
+        return false;
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(kBridge, "canListen",
+                                                  "(Landroid/content/Context;)Z",
+                                                  context.object());
+#else
+    return false;
+#endif
+}
+
+void startVoiceListening()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return;
+    QJniObject::callStaticMethod<void>(kBridge, "startListening",
+                                       "(Landroid/content/Context;)V", context.object());
+#else
+    // 桌面无麦克风：什么都不做，界面照常可点。
+#endif
+}
+
+void stopVoiceListening()
+{
+#ifdef Q_OS_ANDROID
+    QJniObject::callStaticMethod<void>(kBridge, "stopListening", "()V");
+#endif
+}
+
+void startConnectionService()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return;
+    QJniObject::callStaticMethod<void>(kBridge, "startConnectionService",
+                                       "(Landroid/content/Context;)V", context.object());
+#endif
+}
+
+void stopConnectionService()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return;
+    QJniObject::callStaticMethod<void>(kBridge, "stopConnectionService",
+                                       "(Landroid/content/Context;)V", context.object());
+#endif
+}
+
+bool isDeviceOwner()
+{
+#ifdef Q_OS_ANDROID
+    const QJniObject context = activityContext();
+    if (!context.isValid())
+        return false;
+    return QJniObject::callStaticMethod<jboolean>(kBridge, "isDeviceOwner",
+                                                  "(Landroid/content/Context;)Z",
+                                                  context.object());
+#else
     return false;
 #endif
 }

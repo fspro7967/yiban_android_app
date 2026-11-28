@@ -81,9 +81,9 @@ QtObject {
     }
 
     // ---------------------------------------------------------------- 语速（B2-7）
+    // 11/27 已接真接口：DeviceVM.speechRate 持久化 + Android 系统 TTS 实时变速。
+    readonly property bool speechRateReal: true
 
-    readonly property bool speechRateReal: false
-
-    // 1.0 = 系统正常语速；现在 Android 上固定 0.9（YibanPlatform.setSpeechRate）。
-    property real speechRate: 0.9
+    // 1.0 = 系统正常语速；默认 0.9，三档 0.75/0.9/1.1。只读展示，写入走 DeviceVM.setSpeechRate。
+    readonly property real speechRate: DeviceVM.speechRate
 }

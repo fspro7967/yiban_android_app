@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- B2-4：设 device owner 时系统据此授予的策略。
+     只申请 kiosk 必需的 lock-task；不申请改密码/擦数据等高危权限。 -->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <lock-task />
+    </uses-policies>
+</device-admin>

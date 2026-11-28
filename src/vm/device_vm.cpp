@@ -1,11 +1,13 @@
 #include "device_vm.h"
 
 #include "app_core.h"
+#include "board_vm.h"
 #include "connection_probe.h"
 #include "app_settings.h"
 #include "facade_errors.h"
 #include "http_client.h"
 #include "platform.h"
+#include "voice_intent.h"
 #ifdef Q_OS_ANDROID
 #include "alarm_tts.h"   // 离线播报渲染器（src/ 下，仅 Android 编译）
 #endif
@@ -50,6 +52,11 @@ DeviceVM::DeviceVM(QObject *parent)
     AppSettings *settings = AppSettings::instance();
     m_voiceEnabled = settings->voiceEnabled();
     m_nightQuiet = settings->nightQuiet();
+    m_speechRate = settings->speechRate();
+    m_speechPitch = settings->speechPitch();
+    // TTS 可能在 Java 侧先初始化（闹钟服务），这里把持久化的语速/音调同步下去。
+    Platform::setSpeechRate(m_speechRate);
+    Platform::setSpeechPitch(m_speechPitch);
     m_paired = settings->paired();
     m_role = settings->role();
     m_serverUrl = settings->serverUrl();
@@ -83,7 +90,7 @@ DeviceVM::DeviceVM(QObject *parent)
         });
         if (!m_tts->availableEngines().isEmpty()) {
             m_tts->setLocale(QLocale(QLocale::Chinese, QLocale::China));
-            m_tts->setRate(-0.15);
+            m_tts->setRate(m_speechRate - 1.0); // B2-7：0.9 → -0.1，与 Android 倍率对齐
         }
     }
 
@@ -104,6 +111,16 @@ DeviceVM::DeviceVM(QObject *parent)
             [this] { QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms); });
     connect(core, &AppCore::plansChanged, this,
             [this] { QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms); });
+    // X-1（方案 B）：升级链由 B2 的 DeviceVM 订阅，不依赖提醒页是否打开。
+    // AppCore::advanceEscalation 只在等级真正变化时 emit，escalate(id) 本身不再 emit，
+    // 因此这里只认 level==3 且只调用一次 sos(3)；QML 按约定不调，避免拨两次。
+    connect(core, &AppCore::escalationChanged, this, [this](qint64, int level) {
+        if (level == 3)
+            QTimer::singleShot(0, this, [this] { sos(3); });
+    });
+    // B2-6：板子呼救键和手动 SOS 走同一条路径（拨号/短信/云端 escalate）。
+    connect(BoardVM::instance(), &BoardVM::boardSosRequested, this,
+            [this] { sos(1); });
 
     m_permissionCache = Platform::grantedLabels();
     m_permissionDiagnostics = Platform::permissionDiagnostics();
@@ -126,6 +143,9 @@ DeviceVM::DeviceVM(QObject *parent)
     m_tickTimer->setInterval(2000);
     connect(m_tickTimer, &QTimer::timeout, this, &DeviceVM::tick);
     m_tickTimer->start();
+
+    // B2-9：平台把识别到的原始文本送回（已在主线程），这里做意图判定和业务动作。
+    Platform::setVoiceResultListener([this](const QString &text) { onVoiceResult(text); });
 
     // 启动后先排一次今天剩下的闹钟（AppCore 的 occurrence 是构造完才有的）
     QTimer::singleShot(1500, this, &DeviceVM::rescheduleAlarms);
@@ -188,6 +208,8 @@ void DeviceVM::refreshPermissions()
     m_permissionCache = current;
     m_permissionDiagnostics = diagnostics;
     emit permissionChanged();
+    // B2-9：麦克风权限变化会改变 voiceAvailable，通知 QML 重算绑定。
+    emit voiceChanged();
 }
 
 void DeviceVM::refreshToken()
@@ -240,6 +262,50 @@ void DeviceVM::setVoiceEnabled(bool on)
     emit voiceChanged();
     // 已经排进系统的闹钟还带着旧的"要不要播报"标记，重排一遍才生效
     QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
+}
+
+void DeviceVM::setSpeechRate(double rate)
+{
+    if (rate < 0.5 || rate > 2.0 || qFuzzyCompare(m_speechRate, rate))
+        return;
+    m_speechRate = rate;
+    AppSettings::instance()->setSpeechRate(rate);
+    Platform::setSpeechRate(rate); // Android 已初始化的 TTS 立即变速
+    if (m_tts)
+        m_tts->setRate(rate - 1.0); // 桌面 QTextToSpeech 的 rate 是 -1.0~1.0
+    AppCore::instance()->logOperation(QStringLiteral("设置"),
+                                      QStringLiteral("播报语速改为 %1").arg(rate));
+    emit voiceChanged();
+    // 到点播报走预渲染的离线 WAV，语速变了要重新渲染才能"下一条立即生效"。
+    QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
+}
+
+void DeviceVM::setSpeechPitch(double pitch)
+{
+    if (pitch < 0.5 || pitch > 2.0 || qFuzzyCompare(m_speechPitch, pitch))
+        return;
+    m_speechPitch = pitch;
+    AppSettings::instance()->setSpeechPitch(pitch);
+    Platform::setSpeechPitch(pitch);
+    AppCore::instance()->logOperation(QStringLiteral("设置"),
+                                      QStringLiteral("播报音调改为 %1").arg(pitch));
+    emit voiceChanged();
+    QTimer::singleShot(0, this, &DeviceVM::rescheduleAlarms);
+}
+
+QStringList DeviceVM::chineseVoices() const
+{
+    return Platform::chineseVoices();
+}
+
+bool DeviceVM::deviceOwner() const
+{
+    return Platform::isDeviceOwner();
+}
+
+bool DeviceVM::chineseVoiceMissing() const
+{
+    return Platform::chineseVoiceMissing();
 }
 
 void DeviceVM::setNightQuiet(bool on)
@@ -675,6 +741,79 @@ void DeviceVM::stopSpeaking()
     }
     if (m_tts)
         m_tts->stop();
+}
+
+// ---------------------------------------------------------------- 语音确认（B2-9）
+
+bool DeviceVM::voiceAvailable() const
+{
+    return Platform::canListen();
+}
+
+void DeviceVM::startVoiceConfirm(qint64 occurrenceId)
+{
+    m_voiceOccurrenceId = occurrenceId;
+
+    // 无麦克风权限：先申请，不启动识别、不崩（验收标准最后一条）。
+    if (Platform::isAndroid()
+            && !Platform::hasPermission(Platform::Permission::Microphone)) {
+        Platform::requestPermission(Platform::Permission::Microphone);
+        emit toast(QStringLiteral("需要先允许使用麦克风，才能说话确认"));
+        return;
+    }
+    if (!Platform::canListen()) {
+        // 桌面构建 / 设备没有识别服务：提示一次，提醒页按钮照常可点。
+        emit toast(QStringLiteral("这台设备暂时不能用语音确认，请点下面的按钮"));
+        return;
+    }
+
+    // 录音时把正在念的播报停掉，否则识别到的是 TTS 自己的声音。
+    stopSpeaking();
+    m_voiceListening = true;
+    emit voiceListeningChanged();
+    Platform::startVoiceListening();
+}
+
+void DeviceVM::stopVoiceConfirm()
+{
+    if (!m_voiceListening)
+        return;
+    Platform::stopVoiceListening();
+    m_voiceListening = false;
+    emit voiceListeningChanged();
+}
+
+void DeviceVM::onVoiceResult(const QString &text)
+{
+    if (m_voiceListening) {
+        m_voiceListening = false;
+        emit voiceListeningChanged();
+    }
+
+    const VoiceIntent::Intent intent = VoiceIntent::classify(text);
+    const qint64 occurrenceId = m_voiceOccurrenceId;
+    m_voiceOccurrenceId = 0; // 一次性：连点/迟到的结果不再触发第二次
+
+    if (intent == VoiceIntent::Intent::Unknown || occurrenceId <= 0) {
+        // 认不出话是常态，只提示、不动作，绝不把"今天天气不错"当成确认。
+        if (!text.trimmed().isEmpty() || occurrenceId <= 0)
+            emit toast(QStringLiteral("没听清，请再说一遍，或直接点下面的按钮"));
+        return;
+    }
+
+    AppCore *core = AppCore::instance();
+    QString error;
+    if (intent == VoiceIntent::Intent::Confirm) {
+        if (!core->confirm(occurrenceId, &error))
+            emit toast(error.isEmpty() ? QStringLiteral("这条已经确认过了") : error);
+        else
+            emit toast(QStringLiteral("已记下：完成"));
+    } else {
+        if (!core->snooze(occurrenceId, &error))
+            emit toast(error.isEmpty() ? QStringLiteral("这条暂时不能推迟") : error);
+        else
+            emit toast(QStringLiteral("好的，稍后再提醒"));
+    }
 }
 
 // ---------------------------------------------------------------- 呼救

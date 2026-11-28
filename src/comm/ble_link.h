@@ -2,7 +2,9 @@
 
 #include "device_link.h"
 
+#ifndef YIBAN_NO_BLUETOOTH
 #include <QBluetoothDeviceInfo>
+#endif
 #include <QList>
 #include <QVariantList>
 
@@ -22,6 +24,12 @@ inline constexpr const char *kTxCharUuid = "6e400003-b5a3-f393-e0a9-e50e24dcca9e
 // 15 秒收不到就按掉线降级（按缓存继续亮灯，角上亮灰点）。
 inline constexpr const char *kHeartbeatTopic = "home/host/heartbeat";
 inline constexpr int kHeartbeatIntervalMs = 5000;
+// 提醒下发：topic 后缀是板子的 device id；payload {occurrence_id,title,state,light_color,due_ts}。
+// 板子上报：home/ack/<device> {occurrence_id,action,ts}；home/alarm {level,occurrence_id,ts}。
+inline constexpr const char *kReminderTopicPrefix = "home/reminder/";
+inline constexpr const char *kAckTopicPrefix = "home/ack/";
+inline constexpr const char *kAlarmTopic = "home/alarm";
+inline constexpr const char *kPresenceTopic = "home/sensor/presence";
 } // namespace BoardLinkProtocol
 
 // DeviceLink 的 BLE 实现：手机（或笔记本、树莓派）做中心设备，去连外设板的串口透传服务。
@@ -52,11 +60,11 @@ public:
     // 当前连接（或正在连接）的设备名；idle 时是已绑定设备的名字，没绑定为空。
     QString deviceName() const;
     // 是否记着一块板。绑定后断线会自动重连，直到 forget()。
-    bool bound() const { return !m_boundId.isEmpty(); }
+    bool bound() const;
     // DeviceHandler 最近一条原始状态消息，联调时看。
-    QString detail() const { return m_detail; }
-    int sentCount() const { return m_sentCount; }
-    int receivedCount() const { return m_receivedCount; }
+    QString detail() const;
+    int sentCount() const;
+    int receivedCount() const;
 
     // 需要蓝牙权限时会先向系统申请，授权后自动开始；被拒绝走 rejected。
     void startScan();
@@ -80,6 +88,7 @@ signals:
     void notice(const QString &text);
 
 private:
+#ifndef YIBAN_NO_BLUETOOTH
     void beginScan();
     void setScanning(bool on);
     void setState(const QString &state, const QString &problem = QString());
@@ -97,15 +106,19 @@ private:
     static bool bluetoothGranted();
     static QString deviceId(const QBluetoothDeviceInfo &info);
     static bool advertisesBoard(const QBluetoothDeviceInfo &info);
+#endif
 
+#ifndef YIBAN_NO_BLUETOOTH
     DeviceHandler *m_handler = nullptr;
     QTimer *m_heartbeat = nullptr;
     QTimer *m_reconnect = nullptr;
     QList<QBluetoothDeviceInfo> m_found;
+#endif
     bool m_scanning = false;
     QString m_state = QStringLiteral("idle");
     QString m_problem;
     QString m_detail;
+#ifndef YIBAN_NO_BLUETOOTH
     QString m_peerId;        // 当前连接（或正在连接）的设备
     QString m_peerName;
     QString m_boundId;       // 记住的那块板
@@ -117,4 +130,5 @@ private:
     bool m_writing = false;
     int m_sentCount = 0;
     int m_receivedCount = 0;
+#endif
 };

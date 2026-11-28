@@ -144,6 +144,9 @@ SyncVM::SyncVM(QObject *parent)
             Qt::QueuedConnection);
     connect(core, &AppCore::recordsChanged, this, &SyncVM::uploadRecords,
             Qt::QueuedConnection);
+    // 撤销记录会发 recordsChanged（墓碑入队/清掉）：DELETE 也跟着冲一次。
+    connect(core, &AppCore::recordsChanged, this, &SyncVM::uploadRecordDeletes,
+            Qt::QueuedConnection);
     connect(core, &AppCore::plansChanged, this, &SyncVM::uploadPlans,
             Qt::QueuedConnection);
     connect(core, &AppCore::plansChanged, this, &SyncVM::syncChanged);
@@ -210,6 +213,8 @@ void SyncVM::heartbeat()
         uploadPending();
     if (!m_recordBackoff.isActive())
         uploadRecords();
+    if (!m_recordBackoff.isActive())
+        uploadRecordDeletes();
     pullState();
 }
 
@@ -217,7 +222,8 @@ QString SyncVM::computeState() const
 {
     if (!canSync())
         return QStringLiteral("offline");
-    if (m_uploadReq || m_alarmReq || m_recordReq || m_planReq || m_stateReq || m_plansReq)
+    if (m_uploadReq || m_alarmReq || m_recordReq || m_recordDeleteReq
+        || m_planReq || m_stateReq || m_plansReq)
         return QStringLiteral("syncing");
     if (m_failed)
         return QStringLiteral("error");
@@ -238,6 +244,7 @@ int SyncVM::pendingCount() const
 {
     return AppCore::instance()->pendingEvents().size()
         + AppCore::instance()->pendingRecordCount()
+        + AppCore::instance()->pendingDeleteRecordCount()
         + AppCore::instance()->pendingPlanCount();
 }
 
@@ -266,6 +273,10 @@ void SyncVM::retrySync()
     AppCore::instance()->logOperation(
         QStringLiteral("管理"),
         QStringLiteral("手动同步：%1 条记录待上传").arg(pendingCount()));
+    // 手动同步是用户明确要求的重试：跳过上一轮 rejected[retryable:true]
+    // 或网络失败留下的退避，立刻再试一次。
+    m_uploadBackoff.stop();
+    m_backoffMs = 0;
     m_failed = false;
     emit syncChanged();
     cycle();
@@ -276,12 +287,17 @@ void SyncVM::cycle()
     uploadPlans(); // 计划先走：新计划换号后，挂在它上面的事件才能传
     uploadPending();
     uploadRecords();
+    uploadRecordDeletes();
     pullState();
     pullPlans(true); // 手动同步/重连：拉全量对账，云端删掉的计划这里能发现
 }
 
 void SyncVM::uploadPending()
 {
+    // 退避期间不重发：rejected[retryable:true] 和网络失败都走这条路，
+    // 否则 eventsChanged 会在同一轮事件循环里把 busy 事件立刻打回去。
+    if (m_uploadBackoff.isActive())
+        return;
     if (m_uploadReq || m_alarmReq || !canSync())
         return;
     // 挂在还没上传的计划上的事件先留着（服务端没有那个 occurrence）
@@ -340,6 +356,52 @@ void SyncVM::uploadRecords()
                             recordToServer(rec, true))
         : m_http->postJson(QStringLiteral("/records"), recordToServer(rec, false));
     emit syncChanged();
+}
+
+void SyncVM::uploadRecordDeletes()
+{
+    if (m_recordDeleteReq || m_recordReq || !canSync())
+        return;
+    const QVariantList pending = AppCore::instance()->pendingRecordDeletes();
+    if (pending.isEmpty())
+        return;
+    const QVariantMap item = pending.first().toMap();
+    m_recordDeleteId = item.value(QStringLiteral("recordId")).toLongLong();
+    const qint64 serverId = item.value(QStringLiteral("serverRecordId")).toLongLong();
+    if (serverId <= 0) {
+        // 脏墓碑（不该出现）：直接清掉，别卡住队列
+        AppCore::instance()->markRecordDeleted(m_recordDeleteId);
+        m_recordDeleteId = 0;
+        return;
+    }
+    m_recordDeleteReq = m_http->deleteJson(QStringLiteral("/records/%1").arg(serverId));
+    emit syncChanged();
+}
+
+void SyncVM::onRecordDeleteReply(int status, const QJsonObject &body)
+{
+    Q_UNUSED(body)
+    const qint64 localId = m_recordDeleteId;
+    m_recordDeleteReq = 0;
+    m_recordDeleteId = 0;
+
+    if ((status >= 200 && status < 300) || status == 404) {
+        // 2xx 已删；404 服务端本来就没有这条，同样当成功（云组 C-4 契约）
+        AppCore::instance()->markRecordDeleted(localId);
+        m_recordBackoffMs = 0;
+        noteSuccess();
+    } else if (status == 401) {
+        onUnauthorized();
+        emit syncChanged();
+        return;
+    } else {
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
+    emit syncChanged();
+    uploadRecordDeletes(); // 本地墓碑已更新，接着删下一条
 }
 
 void SyncVM::uploadPlans()
@@ -514,6 +576,7 @@ void SyncVM::onRecordReply(int status, const QJsonObject &body)
     }
     emit syncChanged();
     uploadRecords(); // 本地状态已同步更新，直接接着传下一条
+    uploadRecordDeletes(); // 上传途中被撤销的会在这里补出墓碑，顺手发 DELETE
 }
 
 void SyncVM::scheduleUploadRetry()
@@ -538,6 +601,10 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
 
     if (requestId == m_recordReq) {
         onRecordReply(status, body);
+        return;
+    }
+    if (requestId != 0 && requestId == m_recordDeleteReq) {
+        onRecordDeleteReply(status, body);
         return;
     }
     if (requestId == m_planReq) {
@@ -575,17 +642,33 @@ void SyncVM::onReply(quint64 requestId, int status, const QJsonObject &body)
         m_uploadReq = 0;
         if (ok) {
             // accepted 里的都算已提交（applied=false 是服务端去重，同样
-            // 不需要再传）；rejected 是服务端明确拒绝（过时状态、找不到
-            // occurrence），重传也不会变结果，标记过期防止无限重放。
+            // 不需要再传）；rejected 按 retryable 分流（1124TODO B2-1）：
+            //   * false 或字段缺失（旧云端）→ 终态过期，不无限重放；
+            //   * true（busy / internal_error）→ 留在队列，按退避下一轮重发。
             QVariantList accepted = ackedFromServer(
                 body.value(QLatin1String("accepted")).toArray());
-            QStringList rejected;
-            for (const auto &item : body.value(QLatin1String("rejected")).toArray())
-                rejected.append(item.toObject().value(QLatin1String("event_id")).toString());
+            QStringList expired;
+            bool hasRetryable = false;
+            for (const auto &item : body.value(QLatin1String("rejected")).toArray()) {
+                const QJsonObject rejected = item.toObject();
+                const QString eventId =
+                    rejected.value(QLatin1String("event_id")).toString();
+                if (eventId.isEmpty())
+                    continue;
+                if (rejected.value(QLatin1String("retryable")).toBool(false))
+                    hasRetryable = true;
+                else
+                    expired.append(eventId);
+            }
             AppCore::instance()->markEventsSynced(accepted);
-            if (!rejected.isEmpty())
-                AppCore::instance()->expireEvents(rejected);
+            if (!expired.isEmpty())
+                AppCore::instance()->expireEvents(expired);
             noteSuccess();
+            if (hasRetryable) {
+                // 留队的事件不能被 eventsChanged 触发的即时上传又原样发出去，
+                // 起退避定时器；uploadPending() 在退避期间直接返回。
+                scheduleUploadRetry();
+            }
         } else if (status == 409) {
             // 服务端把状态冲突作为顶层 409 返回（不是 200 里的 rejected 数组）。
             // 这类事件重传永远不会成功：按 occurrence_id 找出本批事件并标记过期，
@@ -691,6 +774,15 @@ void SyncVM::onFailed(quint64 requestId, const QString &code)
     if (requestId != 0 && requestId == m_recordReq) {
         m_recordReq = 0;
         m_recordLocalId = 0;
+        m_failed = true;
+        scheduleRecordRetry();
+        emit syncChanged();
+        return;
+    }
+    if (requestId != 0 && requestId == m_recordDeleteReq) {
+        // 网络失败：墓碑留在队列里，等退避/恢复联网后补发 DELETE
+        m_recordDeleteReq = 0;
+        m_recordDeleteId = 0;
         m_failed = true;
         scheduleRecordRetry();
         emit syncChanged();

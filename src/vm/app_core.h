@@ -63,6 +63,15 @@ public:
     // PATCH 回 404（服务端没有这条）：清掉 serverRecordId，下一轮重新 POST。
     void forgetServerRecord(qint64 recordId);
 
+    // ---- 撤销记录的删除墓碑（C-4：DELETE /v1/records/{id}）----
+    // 撤销已上传（serverRecordId > 0）的记录时，物理删本地那条并留一个墓碑，
+    // 让 SyncVM 发 DELETE。未上传（serverRecordId == 0/-1）的只删本地。
+    // 每项 {recordId, serverRecordId}；断网/重启都保留，DELETE 成功（含 404）后清掉。
+    QVariantList pendingRecordDeletes() const;
+    int pendingDeleteRecordCount() const;
+    // DELETE 回执：2xx 或 404 视为已删，清墓碑。
+    void markRecordDeleted(qint64 recordId);
+
     // ---- 计划上传队列（规范 §8：POST / PATCH / DELETE /v1/plans）----
     // 真实数据域里本机新建的计划先用本地号段（kLocalPlanIdBase 起）并标 localOnly，
     // 避免和服务端自增的 plan_id 撞号；POST 回执拿到服务端 plan_id 后整体换号
@@ -188,6 +197,7 @@ private:
         QVariantList occurrences;
         QVariantList records;
         QVariantList events;
+        QVariantList deletedRecords;            // 撤销已上传记录的 DELETE 墓碑
         qint64 nextPlanId = 1;
         qint64 nextRecordId = 1;
         qint64 nextEventSeq = 1;
@@ -250,6 +260,7 @@ private:
     QVariantList m_occurrences;
     QVariantList m_records;
     QVariantList m_events;
+    QVariantList m_deletedRecords;          // 撤销已上传记录的 DELETE 墓碑
     QVariantList m_opLog; // 旧的在前；对外输出时倒过来
     qint64 m_nextOpSeq = 1;
 

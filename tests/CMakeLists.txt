@@ -124,3 +124,16 @@ add_test(NAME sync_flow COMMAND tst_sync)
 # AppCore 落 SQLite 之后（S1）同步测试也会开库：同样隔离到构建目录。
 set_tests_properties(sync_flow PROPERTIES ENVIRONMENT
     "QT_QPA_PLATFORM=offscreen;YIBAN_APP_DB=${CMAKE_CURRENT_BINARY_DIR}/tst_sync.sqlite")
+
+# B2-9：语音确认意图判定（纯逻辑，无 Android / 麦克风依赖）。
+# 锁的是"明确命中才动作、疑问句/无关话不误确认"的白名单语义。
+qt_add_executable(tst_voice
+    tst_voice.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/voice_intent.cpp
+    ${CMAKE_SOURCE_DIR}/src/comm/voice_intent.h
+)
+target_include_directories(tst_voice PRIVATE ${CMAKE_SOURCE_DIR}/src/comm)
+target_link_libraries(tst_voice PRIVATE Qt6::Core Qt6::Test)
+
+add_test(NAME voice_intent COMMAND tst_voice)
+set_tests_properties(voice_intent PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
